@@ -4,7 +4,7 @@ import argon2 from "argon2";
 import { query } from "./db.js";
 import { config } from "./config.js";
 
-export interface SessionUser { id: string; email: string; role: "user" | "admin" }
+export type SessionUser = { id: string; email: string; role: "user" | "admin" };
 declare module "fastify" {
   interface FastifyRequest { user: SessionUser | null; csrfToken: string | null }
 }
