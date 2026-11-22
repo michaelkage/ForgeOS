@@ -79,6 +79,17 @@ app.get("/api/devices", async () => {
   return {devices:result.rows};
 });
 
+app.get("/api/admin/devices", async (request,reply) => {
+  if (!requireAdmin(request,reply)) return;
+  const result=await query(
+    `SELECT d.id,d.codename,d.manufacturer,d.model,d.chipset,d.architecture,d.enabled,d.notes,
+      COALESCE(jsonb_agg(jsonb_build_object('base',b.rom_base,'manifestPath',b.manifest_path,'branchName',b.branch_name,'enabled',b.enabled))
+      FILTER (WHERE b.device_id IS NOT NULL), '[]'::jsonb) AS rom_bases
+      FROM forgeos_devices d LEFT JOIN forgeos_device_rom_bases b ON b.device_id=d.id
+      GROUP BY d.id ORDER BY d.manufacturer,d.model`
+  );
+  return {devices:result.rows};
+});
 app.post("/api/admin/devices", async (request,reply) => {
   if (!requireAdmin(request,reply) || !requireCsrf(request,reply)) return;
   const parsed = parse(deviceSchema,request.body);
@@ -115,9 +126,9 @@ app.put("/api/admin/devices/:id", async (request,reply) => {
       [id.data,d.codename,d.manufacturer,d.model,d.chipset??null,d.architecture,d.enabled,d.notes??null]
     );
     if (!updated.rowCount) { await client.query("ROLLBACK"); return fail(reply,404,"device_not_found"); }
-    await client.query("DELETE FROM forgeos_device_rom_bases WHERE device_id=$1",[id.data]);
+    await client.query("UPDATE forgeos_device_rom_bases SET enabled=false WHERE device_id=$1",[id.data]);
     for (const b of d.romBases) await client.query(
-      "INSERT INTO forgeos_device_rom_bases(device_id,rom_base,manifest_path,branch_name,enabled) VALUES($1,$2,$3,$4,$5)",
+      "INSERT INTO forgeos_device_rom_bases(device_id,rom_base,manifest_path,branch_name,enabled) VALUES($1,$2,$3,$4,$5) ON CONFLICT(device_id,rom_base) DO UPDATE SET manifest_path=EXCLUDED.manifest_path,branch_name=EXCLUDED.branch_name,enabled=EXCLUDED.enabled",
       [id.data,b.base,b.manifestPath,b.branchName,b.enabled]
     );
     await client.query("COMMIT"); return {ok:true};
