@@ -1,5 +1,8 @@
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
+import cors from "@fastify/cors";
+import fastifyStatic from "@fastify/static";
+import { resolve } from "node:path";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import { z } from "zod";
@@ -12,6 +15,8 @@ import { validateRepositoryManifest } from "./manifest.js";
 const app = Fastify({ logger: true, trustProxy: config.NODE_ENV === "production", bodyLimit: 256 * 1024 });
 await app.register(helmet, { contentSecurityPolicy: false });
 await app.register(cookie);
+await app.register(cors, { origin: config.WEB_ORIGIN, credentials: true, methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"] });
+await app.register(fastifyStatic, { root: resolve(process.cwd(), "web"), index: ["index.html"] });
 await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
 app.addHook("onRequest", async request => { await loadSession(request); });
 app.addHook("onRequest", async (request, reply) => {
