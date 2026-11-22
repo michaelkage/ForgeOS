@@ -27,7 +27,7 @@ export const deviceSchema = z.object({
       if (base.manifestPath !== expected) ctx.addIssue({ code: "custom", message: "Manifest path does not match ROM base", path: [bases.indexOf(base), "manifestPath"] });
     }
     if (new Set(bases.map(base => base.base)).size !== bases.length) ctx.addIssue({ code: "custom", message: "ROM base entries must be unique" });
-  })
+  }).refine((bases) => bases.length > 0, { message: "At least one supported ROM base is required" })
 });
 export const configSchema = z.object({
   name: z.string().trim().min(1).max(80),
