@@ -1,0 +1,222 @@
+import Fastify from "fastify";
+import cookie from "@fastify/cookie";
+import helmet from "@fastify/helmet";
+import rateLimit from "@fastify/rate-limit";
+import { z } from "zod";
+import { config } from "./config.js";
+import { pool, query } from "./db.js";
+import { configSchema, deviceSchema, loginSchema, registerSchema } from "./schemas.js";
+import { createSession, destroySession, hashPassword, loadSession, requireAdmin, requireCsrf, requireUser, verifyPassword } from "./security.js";
+import { validateRepositoryManifest } from "./manifest.js";
+
+const app = Fastify({ logger: true, trustProxy: config.NODE_ENV === "production", bodyLimit: 256 * 1024 });
+await app.register(helmet, { contentSecurityPolicy: false });
+await app.register(cookie);
+await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
+app.addHook("onRequest", async request => { await loadSession(request); });
+app.addHook("onRequest", async (request, reply) => {
+  const origin = request.headers.origin;
+  if (origin && origin !== config.WEB_ORIGIN) await reply.code(403).send({ error: "origin_not_allowed" });
+});
+app.addHook("onSend", async (_request, reply, payload) => { reply.header("Cache-Control", "no-store"); return payload; });
+const fail = (reply: any, status: number, error: string) => reply.code(status).send({ error });
+const parse = <T>(schema: z.ZodType<T>, body: unknown) => schema.safeParse(body);
+
+app.get("/healthz", async () => ({ ok: true, service: "forgeos-platform-api" }));
+app.get("/readyz", async (_request, reply) => {
+  try { await query("SELECT 1"); return { ok: true, database: "connected" }; }
+  catch { return fail(reply, 503, "database_unavailable"); }
+});
+
+app.post("/api/auth/register", { config: { rateLimit: { max: 5, timeWindow: "15 minutes" } } }, async (request, reply) => {
+  const parsed = parse(registerSchema, request.body);
+  if (!parsed.success) return fail(reply, 400, "invalid_registration");
+  try {
+    const result = await query<{id:string;email:string;role:"user"|"admin"}>(
+      "INSERT INTO forgeos_users(email,password_hash) VALUES($1,$2) RETURNING id,email,role",
+      [parsed.data.email, await hashPassword(parsed.data.password)]
+    );
+    const user = result.rows[0]!, csrfToken = await createSession(user, reply);
+    return reply.code(201).send({ user, csrfToken });
+  } catch (error) {
+    if ((error as {code?:string}).code === "23505") return fail(reply,409,"email_already_registered");
+    request.log.error(error); return fail(reply,500,"registration_failed");
+  }
+});
+app.post("/api/auth/login", { config: { rateLimit: { max: 10, timeWindow: "15 minutes" } } }, async (request, reply) => {
+  const parsed = parse(loginSchema, request.body);
+  if (!parsed.success) return fail(reply,400,"invalid_credentials");
+  const result = await query<{id:string;email:string;role:"user"|"admin";password_hash:string}>(
+    "SELECT id,email,role,password_hash FROM forgeos_users WHERE email=$1",[parsed.data.email]
+  );
+  const row = result.rows[0];
+  if (!row || !(await verifyPassword(row.password_hash,parsed.data.password))) return fail(reply,401,"invalid_credentials");
+  const user = {id:row.id,email:row.email,role:row.role}, csrfToken = await createSession(user,reply);
+  return {user,csrfToken};
+});
+app.get("/api/auth/me", async (request,reply) => {
+  if (!requireUser(request,reply)) return;
+  return {user:request.user,csrfToken:request.csrfToken};
+});
+app.post("/api/auth/logout", async (request,reply) => {
+  if (!requireUser(request,reply) || !requireCsrf(request,reply)) return;
+  await destroySession(request,reply); return {ok:true};
+});
+
+app.get("/api/devices", async () => {
+  const result = await query(
+    `SELECT d.id,d.codename,d.manufacturer,d.model,d.chipset,d.architecture,
+      COALESCE(jsonb_agg(jsonb_build_object('base',b.rom_base,'manifestPath',b.manifest_path,'branchName',b.branch_name))
+      FILTER (WHERE b.enabled), '[]'::jsonb) AS rom_bases
+      FROM forgeos_devices d LEFT JOIN forgeos_device_rom_bases b ON b.device_id=d.id AND b.enabled=true
+      WHERE d.enabled=true GROUP BY d.id ORDER BY d.manufacturer,d.model`
+  );
+  return {devices:result.rows};
+});
+
+app.post("/api/admin/devices", async (request,reply) => {
+  if (!requireAdmin(request,reply) || !requireCsrf(request,reply)) return;
+  const parsed = parse(deviceSchema,request.body);
+  if (!parsed.success) return fail(reply,400,"invalid_device");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN"); const d=parsed.data;
+    const inserted=await client.query(
+      "INSERT INTO forgeos_devices(codename,manufacturer,model,chipset,architecture,enabled,notes) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id",
+      [d.codename,d.manufacturer,d.model,d.chipset??null,d.architecture,d.enabled,d.notes??null]
+    );
+    const deviceId=inserted.rows[0].id as string;
+    for (const b of d.romBases) await client.query(
+      "INSERT INTO forgeos_device_rom_bases(device_id,rom_base,manifest_path,branch_name,enabled) VALUES($1,$2,$3,$4,$5)",
+      [deviceId,b.base,b.manifestPath,b.branchName,b.enabled]
+    );
+    await client.query("COMMIT"); return reply.code(201).send({id:deviceId});
+  } catch(error) {
+    await client.query("ROLLBACK");
+    if ((error as {code?:string}).code==="23505") return fail(reply,409,"device_codename_exists");
+    request.log.error(error); return fail(reply,500,"device_create_failed");
+  } finally { client.release(); }
+});
+
+app.put("/api/admin/devices/:id", async (request,reply) => {
+  if (!requireAdmin(request,reply) || !requireCsrf(request,reply)) return;
+  const id=z.string().uuid().safeParse((request.params as {id?:string}).id), parsed=parse(deviceSchema,request.body);
+  if (!id.success || !parsed.success) return fail(reply,400,"invalid_device");
+  const client=await pool.connect();
+  try {
+    await client.query("BEGIN"); const d=parsed.data;
+    const updated=await client.query(
+      "UPDATE forgeos_devices SET codename=$2,manufacturer=$3,model=$4,chipset=$5,architecture=$6,enabled=$7,notes=$8 WHERE id=$1 RETURNING id",
+      [id.data,d.codename,d.manufacturer,d.model,d.chipset??null,d.architecture,d.enabled,d.notes??null]
+    );
+    if (!updated.rowCount) { await client.query("ROLLBACK"); return fail(reply,404,"device_not_found"); }
+    await client.query("DELETE FROM forgeos_device_rom_bases WHERE device_id=$1",[id.data]);
+    for (const b of d.romBases) await client.query(
+      "INSERT INTO forgeos_device_rom_bases(device_id,rom_base,manifest_path,branch_name,enabled) VALUES($1,$2,$3,$4,$5)",
+      [id.data,b.base,b.manifestPath,b.branchName,b.enabled]
+    );
+    await client.query("COMMIT"); return {ok:true};
+  } catch(error) {
+    await client.query("ROLLBACK");
+    if ((error as {code?:string}).code==="23505") return fail(reply,409,"device_codename_exists");
+    request.log.error(error); return fail(reply,500,"device_update_failed");
+  } finally { client.release(); }
+});
+app.delete("/api/admin/devices/:id", async (request,reply) => {
+  if (!requireAdmin(request,reply) || !requireCsrf(request,reply)) return;
+  const id=z.string().uuid().safeParse((request.params as {id?:string}).id);
+  if (!id.success) return fail(reply,400,"invalid_device_id");
+  const result=await query("UPDATE forgeos_devices SET enabled=false WHERE id=$1 RETURNING id",[id.data]);
+  if (!result.rowCount) return fail(reply,404,"device_not_found");
+  return {ok:true,disabled:true};
+});
+
+app.get("/api/configurations", async (request,reply) => {
+  if (!requireUser(request,reply)) return;
+  const result=await query(
+    `SELECT c.id,c.name,c.rom_base,c.root_method,c.manifest_revision,c.options,c.status,c.validation_report,
+      c.created_at,c.updated_at,d.codename,d.manufacturer,d.model
+      FROM forgeos_rom_configurations c JOIN forgeos_devices d ON d.id=c.device_id
+      WHERE c.user_id=$1 ORDER BY c.updated_at DESC`,[request.user!.id]
+  );
+  return {configurations:result.rows};
+});
+app.post("/api/configurations", async (request,reply) => {
+  if (!requireUser(request,reply) || !requireCsrf(request,reply)) return;
+  const parsed=parse(configSchema,request.body);
+  if (!parsed.success) return fail(reply,400,"invalid_configuration");
+  const c=parsed.data;
+  const supported=await query<{manifest_path:string;branch_name:string}>(
+    `SELECT b.manifest_path,b.branch_name FROM forgeos_devices d JOIN forgeos_device_rom_bases b ON b.device_id=d.id
+      WHERE d.id=$1 AND d.enabled=true AND b.rom_base=$2 AND b.enabled=true`,[c.deviceId,c.romBase]
+  );
+  if (!supported.rowCount) return fail(reply,422,"device_or_rom_base_not_supported");
+  const result=await query(
+    "INSERT INTO forgeos_rom_configurations(user_id,device_id,name,rom_base,root_method,manifest_revision,options) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id,status,created_at,updated_at",
+    [request.user!.id,c.deviceId,c.name,c.romBase,c.rootMethod,c.manifestRevision??supported.rows[0]!.branch_name,c.options]
+  );
+  return reply.code(201).send({configuration:result.rows[0]});
+});
+app.get("/api/configurations/:id", async (request,reply) => {
+  if (!requireUser(request,reply)) return;
+  const id=z.string().uuid().safeParse((request.params as {id?:string}).id);
+  if (!id.success) return fail(reply,400,"invalid_configuration_id");
+  const result=await query(
+    `SELECT c.*,d.codename,d.manufacturer,d.model,b.manifest_path,b.branch_name
+      FROM forgeos_rom_configurations c JOIN forgeos_devices d ON d.id=c.device_id
+      JOIN forgeos_device_rom_bases b ON b.device_id=d.id AND b.rom_base=c.rom_base
+      WHERE c.id=$1 AND c.user_id=$2`,[id.data,request.user!.id]
+  );
+  if (!result.rowCount) return fail(reply,404,"configuration_not_found");
+  return {configuration:result.rows[0]};
+});
+app.put("/api/configurations/:id", async (request,reply) => {
+  if (!requireUser(request,reply) || !requireCsrf(request,reply)) return;
+  const id=z.string().uuid().safeParse((request.params as {id?:string}).id), parsed=parse(configSchema,request.body);
+  if (!id.success || !parsed.success) return fail(reply,400,"invalid_configuration");
+  const c=parsed.data;
+  const supported=await query(
+    "SELECT 1 FROM forgeos_devices d JOIN forgeos_device_rom_bases b ON b.device_id=d.id WHERE d.id=$1 AND d.enabled=true AND b.rom_base=$2 AND b.enabled=true",
+    [c.deviceId,c.romBase]
+  );
+  if (!supported.rowCount) return fail(reply,422,"device_or_rom_base_not_supported");
+  const result=await query(
+    "UPDATE forgeos_rom_configurations SET device_id=$3,name=$4,rom_base=$5,root_method=$6,manifest_revision=$7,options=$8,status='draft',validation_report=NULL WHERE id=$1 AND user_id=$2 RETURNING id,status,updated_at",
+    [id.data,request.user!.id,c.deviceId,c.name,c.romBase,c.rootMethod,c.manifestRevision??null,c.options]
+  );
+  if (!result.rowCount) return fail(reply,404,"configuration_not_found");
+  return {configuration:result.rows[0]};
+});
+app.post("/api/configurations/:id/validate", async (request,reply) => {
+  if (!requireUser(request,reply) || !requireCsrf(request,reply)) return;
+  const id=z.string().uuid().safeParse((request.params as {id?:string}).id);
+  if (!id.success) return fail(reply,400,"invalid_configuration_id");
+  const result=await query(
+    `SELECT c.rom_base,c.root_method,c.manifest_revision,d.enabled AS device_enabled,b.enabled AS base_enabled,
+      b.manifest_path,b.branch_name,d.codename FROM forgeos_rom_configurations c
+      JOIN forgeos_devices d ON d.id=c.device_id
+      JOIN forgeos_device_rom_bases b ON b.device_id=d.id AND b.rom_base=c.rom_base
+      WHERE c.id=$1 AND c.user_id=$2`,[id.data,request.user!.id]
+  );
+  const row=result.rows[0] as {rom_base:string;root_method:string;manifest_revision:string|null;device_enabled:boolean;base_enabled:boolean;manifest_path:string;branch_name:string;codename:string}|undefined;
+  if (!row) return fail(reply,404,"configuration_not_found");
+  const manifest=await validateRepositoryManifest(process.env.MANIFEST_ROOT??"..",row.manifest_path);
+  const errors=[...manifest.errors];
+  if (!row.device_enabled) errors.push("Selected device is disabled");
+  if (!row.base_enabled) errors.push("Selected ROM base is disabled for this device");
+  if (row.manifest_revision && row.manifest_revision!==row.branch_name) errors.push("Manifest revision does not match the verified device/base branch");
+  if (row.root_method!=="none") errors.push("Root method is saved as configuration only; root patching is not implemented yet");
+  const report={valid:errors.length===0,device:row.codename,romBase:row.rom_base,manifestPath:row.manifest_path,projectCount:manifest.projectCount,errors,warnings:["This validates configuration and manifest metadata only; it does not sync or compile Android source."]};
+  await query("UPDATE forgeos_rom_configurations SET status=$3,validation_report=$4 WHERE id=$1 AND user_id=$2",[id.data,request.user!.id,report.valid?"validated":"draft",report]);
+  return {report};
+});
+app.post("/api/configurations/:id/queue", async (request,reply) => {
+  if (!requireUser(request,reply) || !requireCsrf(request,reply)) return;
+  return fail(reply,503,"android_build_workers_not_configured");
+});
+
+app.setNotFoundHandler((_request,reply)=>reply.code(404).send({error:"not_found"}));
+app.setErrorHandler((error,request,reply)=>{request.log.error(error);reply.code(500).send({error:"internal_server_error"});});
+try { await app.listen({host:config.HOST,port:config.PORT}); }
+catch(error) { app.log.error(error); await pool.end(); process.exit(1); }
+for (const signal of ["SIGINT","SIGTERM"] as const) process.on(signal,async()=>{await app.close();await pool.end();process.exit(0);});
