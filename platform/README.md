@@ -1,6 +1,6 @@
 # ForgeOS platform API
 
-This service adds account authentication, administrator-managed device profiles, and saved ROM configurations to the existing Android Repo manifest repository. It does not compile Android source.
+This service adds account authentication, administrator-managed device profiles, and saved ROM configurations to the existing Android Repo manifest repository. It serves a browser-based ROM configurator at the service root. It does not compile Android source.
 
 ## Implemented
 
@@ -49,6 +49,7 @@ Do not expose database credentials to the browser or grant users direct SQL acce
 - GET /api/auth/me — current user and CSRF token
 - POST /api/auth/logout — requires x-csrf-token
 - GET /api/devices — enabled device catalog
+- GET /api/admin/devices — admin-only full device catalog, including disabled entries
 - POST /api/admin/devices — admin only; creates device and supported ROM base records
 - PUT /api/admin/devices/:id — admin only; replaces device metadata and supported bases
 - DELETE /api/admin/devices/:id — admin only; disables device
