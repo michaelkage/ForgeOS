@@ -6,7 +6,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(4100),
   HOST: z.string().default("127.0.0.1"),
   DATABASE_URL: z.string().min(1),
-  WEB_ORIGIN: z.string().url().default("http://localhost:3000"),
+  WEB_ORIGIN: z.string().url().default("http://localhost:4100"),
   SESSION_COOKIE_NAME: z.string().default("forgeos_session"),
   SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(168),
   COOKIE_SECURE: z.string().default("false").transform(v => v === "true"),
