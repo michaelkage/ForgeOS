@@ -210,8 +210,9 @@ app.post("/api/configurations/:id/validate", async (request,reply) => {
   if (!row.device_enabled) errors.push("Selected device is disabled");
   if (!row.base_enabled) errors.push("Selected ROM base is disabled for this device");
   if (row.manifest_revision && row.manifest_revision!==row.branch_name) errors.push("Manifest revision does not match the verified device/base branch");
-  if (row.root_method!=="none") errors.push("Root method is saved as configuration only; root patching is not implemented yet");
-  const report={valid:errors.length===0,device:row.codename,romBase:row.rom_base,manifestPath:row.manifest_path,projectCount:manifest.projectCount,errors,warnings:["This validates configuration and manifest metadata only; it does not sync or compile Android source."]};
+  const warnings=["This validates configuration and manifest metadata only; it does not sync or compile Android source."];
+  if (row.root_method!=="none") warnings.push("Selected root method is recorded only; root patching and boot image modification are not implemented.");
+  const report={valid:errors.length===0,device:row.codename,romBase:row.rom_base,rootMethod:row.root_method,manifestPath:row.manifest_path,projectCount:manifest.projectCount,errors,warnings};
   await query("UPDATE forgeos_rom_configurations SET status=$3,validation_report=$4 WHERE id=$1 AND user_id=$2",[id.data,request.user!.id,report.valid?"validated":"draft",report]);
   return {report};
 });
