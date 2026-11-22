@@ -21,7 +21,13 @@ export const deviceSchema = z.object({
     manifestPath: z.enum(["default.xml", "snippets/crdroid.xml"]),
     branchName: z.string().regex(/^[A-Za-z0-9._/-]{1,100}$/),
     enabled: z.boolean().default(true)
-  })).max(2)
+  })).max(2).superRefine((bases, ctx) => {
+    for (const base of bases) {
+      const expected = base.base === "lineage" ? "default.xml" : "snippets/crdroid.xml";
+      if (base.manifestPath !== expected) ctx.addIssue({ code: "custom", message: "Manifest path does not match ROM base", path: [bases.indexOf(base), "manifestPath"] });
+    }
+    if (new Set(bases.map(base => base.base)).size !== bases.length) ctx.addIssue({ code: "custom", message: "ROM base entries must be unique" });
+  })
 });
 export const configSchema = z.object({
   name: z.string().trim().min(1).max(80),
