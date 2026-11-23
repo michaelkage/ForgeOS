@@ -115,6 +115,7 @@ app.post("/api/admin/devices/:id/sources", async (request,reply) => {
     "INSERT INTO forgeos_device_sources(device_id,source_kind,repository_url,branch_name,source_path) VALUES($1,$2,$3,$4,$5) ON CONFLICT(device_id,source_kind,repository_url,branch_name,source_path) DO UPDATE SET verification_status='pending',verified_commit_sha=NULL,verified_files='[]'::jsonb,verification_error=NULL,last_checked_at=NULL,updated_at=now() RETURNING id",
     [id.data,source.sourceKind,source.repositoryUrl.replace(/\\/$/,""),source.branchName,source.sourcePath]
   );
+  await query("UPDATE forgeos_devices SET enabled=false WHERE id=$1",[id.data]);
   return reply.code(201).send({sourceId:result.rows[0]!.id,status:"pending"});
 });
 app.post("/api/admin/devices/:id/sources/:sourceId/verify", async (request,reply) => {
@@ -135,6 +136,9 @@ app.post("/api/admin/devices/:id/sources/:sourceId/verify", async (request,reply
     "UPDATE forgeos_device_sources SET verification_status=$3,verified_commit_sha=$4,verified_files=$5,verification_error=$6,last_checked_at=now(),updated_at=now() WHERE id=$1 AND device_id=$2",
     [sourceId.data,id.data,verified.status,verified.commitSha,JSON.stringify(verified.files),verified.error]
   );
+  if (verified.status !== "verified" && row.source_kind === "device") {
+    await query("UPDATE forgeos_devices SET enabled=false WHERE id=$1",[id.data]);
+  }
   return {sourceId:sourceId.data,...verified};
 });
 
