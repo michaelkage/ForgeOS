@@ -101,9 +101,17 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(422).send({ error: "configuration_must_be_validated" });
       }
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [request.user!.id]);
+      const existing = await client.query(
+        "SELECT id,status,created_at FROM forgeos_build_jobs WHERE configuration_id=$1 AND status IN ('pending','leased')",
+        [id.data]
+      );
+      if (existing.rowCount) {
+        await client.query("COMMIT");
+        return reply.code(202).send({ job: existing.rows[0] });
+      }
       const active = await client.query(
-        "SELECT count(*)::int AS count FROM forgeos_build_jobs WHERE user_id=$1 AND status IN ('pending','leased') AND configuration_id<>$2",
-        [request.user!.id, id.data]
+        "SELECT count(*)::int AS count FROM forgeos_build_jobs WHERE user_id=$1 AND status IN ('pending','leased')",
+        [request.user!.id]
       );
       if (active.rows[0]!.count >= MAX_ACTIVE_BUILD_JOBS_PER_USER) {
         await client.query("ROLLBACK");
