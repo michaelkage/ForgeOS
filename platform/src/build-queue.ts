@@ -110,6 +110,11 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  app.get("/api/builds/status", async () => ({
+    submissionEnabled: config.ENABLE_ANDROID_BUILDS,
+    reason: config.ENABLE_ANDROID_BUILDS ? null : "Build execution is disabled by the operator."
+  }));
+
   app.get("/api/build-jobs", async (request, reply) => {
     if (!requireUser(request, reply)) return;
     const result = await query(
@@ -213,17 +218,32 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
     const parsed = completionSchema.safeParse(request.body);
     if (!id.success || !parsed.success) return reply.code(400).send({ error: "invalid_build_completion" });
-    const result = await query(
-      `UPDATE forgeos_build_jobs SET status='succeeded',artifact_object_key=$4,artifact_sha256=$5,
-        artifact_size_bytes=$6,artifact_content_type=$7,completed_at=now(),updated_at=now(),
-        lease_token=NULL,lease_expires_at=NULL,worker_id=NULL
-       WHERE id=$1 AND status='leased' AND worker_id=$2 AND lease_token=$3 AND lease_expires_at > now()
-       RETURNING id,configuration_id,status,artifact_sha256,artifact_size_bytes,completed_at`,
-      [id.data, parsed.data.workerId, parsed.data.leaseToken, parsed.data.artifact.objectKey,
-        parsed.data.artifact.sha256, parsed.data.artifact.sizeBytes, parsed.data.artifact.contentType]
-    );
-    if (!result.rowCount) return reply.code(409).send({ error: "worker_lease_lost" });
-    return { job: result.rows[0] };
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        `UPDATE forgeos_build_jobs SET status='succeeded',artifact_object_key=$4,artifact_sha256=$5,
+          artifact_size_bytes=$6,artifact_content_type=$7,completed_at=now(),updated_at=now(),
+          lease_token=NULL,lease_expires_at=NULL,worker_id=NULL
+         WHERE id=$1 AND status='leased' AND worker_id=$2 AND lease_token=$3 AND lease_expires_at > now()
+         RETURNING id,configuration_id,status,artifact_sha256,artifact_size_bytes,completed_at`,
+        [id.data, parsed.data.workerId, parsed.data.leaseToken, parsed.data.artifact.objectKey,
+          parsed.data.artifact.sha256, parsed.data.artifact.sizeBytes, parsed.data.artifact.contentType]
+      );
+      if (!result.rowCount) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: "worker_lease_lost" });
+      }
+      await client.query("UPDATE forgeos_rom_configurations SET status='validated' WHERE id=$1 AND status='queued'", [result.rows[0]!.configuration_id]);
+      await client.query("COMMIT");
+      return { job: result.rows[0] };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      request.log.error(error);
+      return reply.code(500).send({ error: "build_completion_failed" });
+    } finally {
+      client.release();
+    }
   });
 
   app.post("/api/internal/build-jobs/:id/fail", async (request, reply) => {
