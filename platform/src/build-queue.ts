@@ -187,15 +187,30 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     if (!requireUser(request, reply) || !requireCsrf(request, reply)) return;
     const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
     if (!id.success) return reply.code(400).send({ error: "invalid_build_job_id" });
-    const result = await query(
-      `UPDATE forgeos_build_jobs SET status='cancelled',lease_token=NULL,lease_expires_at=NULL,
-        worker_id=NULL,updated_at=now() WHERE id=$1 AND user_id=$2 AND status IN ('pending','leased')
-        RETURNING id,status,configuration_id`,
-      [id.data, request.user!.id]
-    );
-    if (!result.rowCount) return reply.code(409).send({ error: "build_job_not_cancellable" });
-    await query("UPDATE forgeos_rom_configurations SET status='draft' WHERE id=$1 AND status='queued'", [result.rows[0]!.configuration_id]);
-    return { job: result.rows[0] };
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        `UPDATE forgeos_build_jobs SET status='cancelled',lease_token=NULL,lease_expires_at=NULL,
+          worker_id=NULL,completed_at=now(),updated_at=now()
+         WHERE id=$1 AND user_id=$2 AND status IN ('pending','leased')
+         RETURNING id,status,configuration_id`,
+        [id.data, request.user!.id]
+      );
+      if (!result.rowCount) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: "build_job_not_cancellable" });
+      }
+      await client.query("UPDATE forgeos_rom_configurations SET status='draft' WHERE id=$1 AND status='queued'", [result.rows[0]!.configuration_id]);
+      await client.query("COMMIT");
+      return { job: result.rows[0] };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      request.log.error(error);
+      return reply.code(500).send({ error: "build_job_cancellation_failed" });
+    } finally {
+      client.release();
+    }
   });
 
   app.post("/api/internal/build-jobs/claim", async (request, reply) => {
