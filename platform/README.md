@@ -35,7 +35,7 @@ From this directory:
     npm test
     npm run dev
 
-The API listens on http://127.0.0.1:4100 by default. MANIFEST_ROOT defaults to the repository root relative to the application module; override it with an absolute path when the manifest checkout is elsewhere. /healthz is a liveness check and /readyz checks the database.
+The API listens on http://127.0.0.1:4100 by default. Set HOST=0.0.0.0 in a container, and set TRUST_PROXY only to the actual reverse-proxy IP addresses or CIDRs. Do not trust arbitrary forwarded headers. MANIFEST_ROOT defaults to the repository root relative to the application module; override it with an absolute path when the manifest checkout is elsewhere. /healthz is a liveness check and /readyz checks the database.
 
 ## First administrator
 
