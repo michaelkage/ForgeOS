@@ -33,7 +33,7 @@ export class SupervisedCommandError extends Error {
 }
 
 class BoundedTail {
-  private value = Buffer.alloc(0);
+  private value: Buffer<ArrayBufferLike> = Buffer.alloc(0);
   constructor(private readonly limit: number) {}
 
   append(chunk: Buffer): void {
