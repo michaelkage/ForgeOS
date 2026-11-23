@@ -9,22 +9,9 @@ const validArtifact = {
   contentType: "application/zip"
 };
 
-test("accepts private artifact object metadata with a safe object key", () => {
+test("accepts artifact completion metadata but rejects caller-selected object keys", () => {
   assert.equal(buildArtifactSchema.safeParse(validArtifact).success, true);
-});
-
-test("rejects traversal, absolute, empty-segment, and whitespace object keys", () => {
-  for (const objectKey of [
-    "../rom.zip",
-    "builds/../rom.zip",
-    "/builds/rom.zip",
-    "builds//rom.zip",
-    "builds/rom file.zip",
-    "builds\\rom.zip",
-    "builds/./rom.zip"
-  ]) {
-    assert.equal(buildArtifactSchema.safeParse({ ...validArtifact, objectKey }).success, false, objectKey);
-  }
+  assert.equal(buildArtifactSchema.safeParse({ ...validArtifact, objectKey: "artifacts/attacker/selected.zip" }).success, false);
 });
 
 test("rejects invalid digest, zero-byte artifact, and non-ZIP content", () => {
