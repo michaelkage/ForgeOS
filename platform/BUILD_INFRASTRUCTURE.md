@@ -29,7 +29,7 @@ The API must create an upload intent only for the active lease matching job ID, 
 
 ### 2. Artifact verification and downloads
 
-Implemented in the platform API: the worker obtains a ten-minute upload intent tied to its live lease, expected SHA-256, and exact byte count. The server generates the object key and SigV4 PUT URL. The required headers include `Content-Length`, `Content-Type: application/zip`, and `If-None-Match: *`. Completion requires the same object key/digest/size; the API checks the lease and intent, performs HEAD validation, streams the object through SHA-256, then records verified metadata. User downloads are owner-scoped and use a five-minute presigned GET URL. Configuration requires all S3 settings together, and production endpoints must use HTTPS. This code still needs integration testing against the selected AWS/MinIO provider and production bucket policy.
+Implemented in the platform API: the worker obtains a ten-minute upload intent tied to its live lease, expected SHA-256, and exact byte count. The server generates the object key and SigV4 PUT URL. The required headers include `Content-Length`, `Content-Type: application/zip`, and `If-None-Match: *`. Completion reports only the digest, byte count, and content type; the API obtains the object key from the lease-bound upload intent, performs HEAD validation, streams the object through SHA-256, then records verified metadata. User downloads are owner-scoped and use a five-minute presigned GET URL. Configuration requires all S3 settings together, and production endpoints must use HTTPS. This code still needs integration testing against the selected AWS/MinIO provider and production bucket policy.
 
 
 
@@ -61,13 +61,13 @@ Do not run multiple customers' jobs in the same writable workspace or worker VM.
 
 Cancellation is a control-plane state transition and a worker process lifecycle event:
 - workers poll/heartbeat at a bounded interval and treat lease loss, cancellation, or failed heartbeat as a hard stop;
-- the worker supervisor sends SIGTERM to the complete build process group, waits a short grace period, then SIGKILLs the process group;
-- child processes must be placed in a dedicated cgroup/process group so shell grandchildren cannot survive cancellation;
+- the implemented supervisor primitive starts commands in a dedicated process group, sends SIGTERM on cancellation or timeout, waits a bounded grace period, then sends SIGKILL; it also cleans up descendants if the command leader exits first;
+- production worker integration must place the process group inside a dedicated cgroup so the host can enforce CPU, memory, PID, and disk limits;
 - stop source sync, build, upload, and log streaming after cancellation;
 - incomplete uploads are aborted and attempt-scoped temporary objects are deleted;
 - completion/failure calls after lease loss are rejected; cancellation must remain terminal.
 
-The API must expose cancellation state to the worker protocol rather than relying on lease expiration alone. A lost network connection must fail closed.
+The supervisor primitive is implemented and unit-tested, but no production worker runtime invokes it yet. The API currently rejects heartbeat/completion after cancellation or lease loss; the future worker must treat that response and any lost control-plane connection as a hard stop.
 
 ### 5. Isolated ROM signing
 
