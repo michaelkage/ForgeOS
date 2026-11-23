@@ -6,6 +6,7 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(4100),
   HOST: z.string().default("127.0.0.1"),
+  TRUST_PROXY: z.string().default("").transform(value => value.split(",").map(item => item.trim()).filter(Boolean)),
   DATABASE_URL: z.string().min(1),
   WEB_ORIGIN: z.string().url().default("http://127.0.0.1:4100"),
   MANIFEST_ROOT: z.string().default(fileURLToPath(new URL("../../", import.meta.url))),
