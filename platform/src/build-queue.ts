@@ -165,6 +165,10 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
          RETURNING id,status,created_at`,
         [request.user!.id, id.data, snapshot, fingerprint]
       );
+      await client.query(
+        "INSERT INTO forgeos_build_job_events(build_job_id,attempt,event_type,details) VALUES($1,0,'queued',$2)",
+        [inserted.rows[0]!.id, JSON.stringify({ snapshotSha256: fingerprint })]
+      );
       await client.query("UPDATE forgeos_rom_configurations SET status='queued' WHERE id=$1", [id.data]);
       await client.query("COMMIT");
       return reply.code(202).send({ job: inserted.rows[0] });
@@ -213,6 +217,28 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     return { job: result.rows[0] };
   });
 
+  app.get("/api/build-jobs/:id/events", async (request, reply) => {
+    if (!requireUser(request, reply)) return;
+    const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
+    const queryParams = request.query as { after?: string };
+    const after = queryParams.after === undefined ? null : /^\\d{1,18}$/.test(queryParams.after) ? queryParams.after : undefined;
+    if (!id.success || after === undefined) return reply.code(400).send({ error: "invalid_build_event_cursor" });
+    const result = await query(
+      `SELECT e.id,e.attempt,e.worker_id,e.event_type,e.details,e.created_at
+       FROM forgeos_build_job_events e
+       JOIN forgeos_build_jobs j ON j.id=e.build_job_id
+       WHERE j.id=$1 AND j.user_id=$2 AND ($3::bigint IS NULL OR e.id>$3)
+       ORDER BY e.id ASC LIMIT 100`,
+      [id.data, request.user!.id, after]
+    );
+    if (!result.rowCount && after === null) {
+      const owned = await query("SELECT 1 FROM forgeos_build_jobs WHERE id=$1 AND user_id=$2", [id.data, request.user!.id]);
+      if (!owned.rowCount) return reply.code(404).send({ error: "build_job_not_found" });
+    }
+    const events = result.rows;
+    return { events, nextCursor: events.length ? String(events[events.length - 1]!.id) : after };
+  });
+
   app.post("/api/build-jobs/:id/download", async (request, reply) => {
     if (!requireUser(request, reply) || !requireCsrf(request, reply)) return;
     const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
@@ -248,6 +274,10 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         await client.query("ROLLBACK");
         return reply.code(409).send({ error: "build_job_not_cancellable" });
       }
+      await client.query(
+        "INSERT INTO forgeos_build_job_events(build_job_id,attempt,event_type,details) VALUES($1,$2,'cancelled',$3)",
+        [result.rows[0]!.id, result.rows[0]!.attempts, JSON.stringify({ previousStatus: "pending_or_leased" })]
+      );
       await client.query("UPDATE forgeos_rom_configurations SET status='draft' WHERE id=$1 AND status='queued'", [result.rows[0]!.configuration_id]);
       await client.query("COMMIT");
       return { job: result.rows[0] };
@@ -339,6 +369,12 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
       if (claimed.rows[0] && !verifyBuildSnapshot(claimed.rows[0].snapshot, claimed.rows[0].snapshot_sha256)) {
         throw new Error("Stored build snapshot fingerprint mismatch");
       }
+      if (claimed.rows[0]) {
+        await client.query(
+          "INSERT INTO forgeos_build_job_events(build_job_id,attempt,worker_id,event_type,details) VALUES($1,$2,$3,'claimed',$4)",
+          [claimed.rows[0].id, claimed.rows[0].attempts, parsed.data.workerId, JSON.stringify({ leaseExpiresAt: claimed.rows[0].lease_expires_at })]
+        );
+      }
       await client.query("COMMIT");
       return { job: claimed.rows[0] ?? null };
     } catch (error) {
@@ -404,6 +440,10 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         objectKey = saved.object_key;
         expiresAt = saved.expires_at;
       }
+      await query(
+        "INSERT INTO forgeos_build_job_events(build_job_id,attempt,worker_id,event_type,details) SELECT $1,attempts,$2,'artifact_upload_authorized',$3 FROM forgeos_build_jobs WHERE id=$1",
+        [id.data, parsed.data.workerId, JSON.stringify({ sha256: parsed.data.sha256, sizeBytes: parsed.data.sizeBytes })]
+      );
       return {
         objectKey,
         method: "PUT",
@@ -447,13 +487,17 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
             artifact_size_bytes=$6,artifact_content_type='application/zip',artifact_verified_at=now(),
             completed_at=now(),updated_at=now(),lease_token=NULL,lease_expires_at=NULL,worker_id=NULL
            WHERE id=$1 AND status='leased' AND worker_id=$2 AND lease_token=$3 AND lease_expires_at > now()
-           RETURNING id,configuration_id,status,artifact_sha256,artifact_size_bytes,artifact_verified_at,completed_at`,
+           RETURNING id,configuration_id,status,attempts,artifact_sha256,artifact_size_bytes,artifact_verified_at,completed_at`,
           [id.data, parsed.data.workerId, parsed.data.leaseToken, objectKey, artifact.sha256, artifact.sizeBytes]
         );
         if (!result.rowCount) {
           await client.query("ROLLBACK");
           return reply.code(409).send({ error: "worker_lease_lost" });
         }
+        await client.query(
+          "INSERT INTO forgeos_build_job_events(build_job_id,attempt,worker_id,event_type,details) VALUES($1,$2,$3,'artifact_verified',$4)",
+          [result.rows[0]!.id, result.rows[0]!.attempts, parsed.data.workerId, JSON.stringify({ sha256: artifact.sha256, sizeBytes: artifact.sizeBytes })]
+        );
         await client.query("UPDATE forgeos_artifact_upload_intents SET verified_at=now() WHERE build_job_id=$1 AND lease_token=$2 AND verified_at IS NULL", [id.data, parsed.data.leaseToken]);
         await client.query("UPDATE forgeos_rom_configurations SET status='validated' WHERE id=$1 AND status='queued'", [result.rows[0]!.configuration_id]);
         await client.query("COMMIT");
@@ -496,6 +540,10 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         await client.query("ROLLBACK");
         return reply.code(409).send({ error: "worker_lease_lost" });
       }
+      await client.query(
+        "INSERT INTO forgeos_build_job_events(build_job_id,attempt,worker_id,event_type,details) VALUES($1,$2,$3,'worker_reported_failure',$4)",
+        [result.rows[0]!.id, result.rows[0]!.attempts, parsed.data.workerId, JSON.stringify({ status: result.rows[0]!.status, errorCode: parsed.data.errorCode, retryable: parsed.data.retryable })]
+      );
       if (result.rows[0]!.status === "failed") {
         await client.query("UPDATE forgeos_rom_configurations SET status='draft' WHERE id=$1 AND status='queued'", [result.rows[0]!.configuration_id]);
       }
