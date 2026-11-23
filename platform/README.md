@@ -169,7 +169,7 @@ Before uploading, the worker computes the ZIP's SHA-256 and byte size, then requ
 }
 ```
 
-The API returns a server-generated object key, a short-lived presigned PUT URL, and the exact `content-type` and `content-length` headers. The worker uploads directly to storage and then reports that same object key, digest, byte size, and content type to completion:
+The API returns a server-generated object key, a short-lived presigned PUT URL, and the exact `content-type`, `content-length`, and `if-none-match: *` headers. The conditional write prevents a replayed upload URL from overwriting an already-created artifact object. The worker uploads directly to storage and then reports that same object key, digest, byte size, and content type to completion:
 
 ```json
 {
