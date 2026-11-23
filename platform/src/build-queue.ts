@@ -210,6 +210,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
           worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
           error_code=CASE WHEN attempts >= max_attempts THEN 'worker_lease_expired' ELSE error_code END,
           error_message=CASE WHEN attempts >= max_attempts THEN 'Worker lease expired too many times' ELSE error_message END,
+          completed_at=CASE WHEN attempts >= max_attempts THEN now() ELSE NULL END,
           updated_at=now()
          WHERE status='leased' AND lease_expires_at < now()`
       );
