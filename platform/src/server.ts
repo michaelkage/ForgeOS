@@ -321,7 +321,7 @@ app.post("/api/configurations/:id/validate", async (request,reply) => {
   if (row.manifest_revision && row.manifest_revision!==row.branch_name) errors.push("Manifest revision does not match the verified device/base branch");
   const warnings=["This validates configuration and manifest metadata only; it does not sync or compile Android source."];
   if (row.root_method!=="none") warnings.push("Selected root method is recorded only; root patching and boot image modification are not implemented.");
-  const report={valid:errors.length===0,device:row.codename,romBase:row.rom_base,rootMethod:row.root_method,manifestPath:row.manifest_path,projectCount:manifest.projectCount,deviceTreeSource:pinnedSource?{repositoryUrl:pinnedSource.repository_url,branchName:pinnedSource.branch_name,commitSha:pinnedSource.verified_commit_sha,lastCheckedAt:pinnedSource.last_checked_at}:null,errors,warnings};
+  const report={valid:errors.length===0,device:row.codename,romBase:row.rom_base,rootMethod:row.root_method,manifestPath:row.manifest_path,manifestSha256:manifest.sha256,projectCount:manifest.projectCount,deviceTreeSource:pinnedSource?{repositoryUrl:pinnedSource.repository_url,branchName:pinnedSource.branch_name,commitSha:pinnedSource.verified_commit_sha,lastCheckedAt:pinnedSource.last_checked_at}:null,errors,warnings};
   await query("UPDATE forgeos_rom_configurations SET status=$3,validation_report=$4 WHERE id=$1 AND user_id=$2",[id.data,request.user!.id,report.valid?"validated":"draft",report]);
   return {report};
 });
