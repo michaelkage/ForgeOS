@@ -402,7 +402,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         objectKey,
         method: "PUT",
         url: createArtifactUploadUrl(objectKey, parsed.data.sizeBytes, Math.max(1, Math.min(600, Math.floor((expiresAt.getTime() - Date.now()) / 1000)))),
-        requiredHeaders: { "content-type": "application/zip", "content-length": String(parsed.data.sizeBytes) },
+        requiredHeaders: { "content-type": "application/zip", "content-length": String(parsed.data.sizeBytes), "if-none-match": "*" },
         expiresAt
       };
     } catch (error) {
