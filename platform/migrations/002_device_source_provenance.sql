@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS forgeos_device_sources (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
  device_id uuid NOT NULL REFERENCES forgeos_devices(id) ON DELETE CASCADE,
  source_kind forgeos_device_source_kind NOT NULL,
+ rom_base forgeos_rom_base,
  repository_url text NOT NULL,
  branch_name text NOT NULL,
  source_path text NOT NULL DEFAULT '',
@@ -18,7 +19,7 @@ CREATE TABLE IF NOT EXISTS forgeos_device_sources (
  CONSTRAINT forgeos_source_branch_check CHECK (branch_name ~ '^[A-Za-z0-9._/-]{1,100}$'),
  CONSTRAINT forgeos_source_path_check CHECK (source_path='' OR (source_path !~ '(^/|(^|/)\.\.(/|$)|[[:cntrl:]])' AND length(source_path)<=240)),
  CONSTRAINT forgeos_source_files_array CHECK (jsonb_typeof(verified_files)='array'),
- UNIQUE(device_id,source_kind,repository_url,branch_name,source_path)
+ UNIQUE(device_id,source_kind,rom_base,repository_url,branch_name,source_path)
 );
 CREATE INDEX IF NOT EXISTS forgeos_device_sources_device_idx ON forgeos_device_sources(device_id,source_kind);
 DROP TRIGGER IF EXISTS forgeos_device_sources_touch ON forgeos_device_sources;
