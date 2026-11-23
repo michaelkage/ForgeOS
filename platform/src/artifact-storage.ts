@@ -97,7 +97,7 @@ async function signedStorageRequest(method: "HEAD" | "GET", objectKey: string): 
   const auth = "AWS4-HMAC-SHA256 Credential=" + s.accessKey + "/" + amzDate.slice(0, 8) + "/" + s.region +
     "/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=" +
     signature(method, url, headers, payloadHash, now);
-  return fetch(url, { method, headers: { ...headers, Authorization: auth }, signal: AbortSignal.timeout(120_000), redirect: "error" });
+  return fetch(url, { method, headers: { "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate, Authorization: auth }, signal: AbortSignal.timeout(120_000), redirect: "error" });
 }
 
 export async function verifyUploadedArtifact(objectKey: string, expectedSize: number, expectedSha256: string): Promise<void> {
