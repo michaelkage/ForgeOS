@@ -46,6 +46,12 @@ try {
     "SELECT tgname FROM pg_trigger WHERE tgrelid='forgeos_build_jobs'::regclass AND NOT tgisinternal"
   );
   assert.ok(snapshotTrigger.rows.some(row => row.tgname === "forgeos_build_jobs_immutable_snapshot"));
+  const jobConstraints = await client.query(
+    "SELECT conname FROM pg_constraint WHERE conrelid='forgeos_build_jobs'::regclass"
+  );
+  const jobConstraintNames = new Set(jobConstraints.rows.map(row => row.conname));
+  assert.ok(jobConstraintNames.has("forgeos_build_job_terminal_timestamp"));
+  assert.ok(jobConstraintNames.has("forgeos_build_job_artifact_consistency"));
 } finally {
   await client.end();
 }
