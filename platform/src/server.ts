@@ -108,9 +108,11 @@ app.post("/api/admin/devices/:id/sources", async (request,reply) => {
   const id=z.string().uuid().safeParse((request.params as {id?:string}).id);
   const parsed=deviceSourceSchema.safeParse(request.body);
   if (!id.success || !parsed.success) return fail(reply,400,"invalid_device_source");
-  const exists=await query("SELECT d.id FROM forgeos_devices d JOIN forgeos_device_rom_bases b ON b.device_id=d.id WHERE d.id=$1 AND b.rom_base=$2 AND b.enabled=true",[id.data,parsed.data.romBase]);
-  if (!exists.rowCount) return fail(reply,404,"device_or_enabled_rom_base_not_found");
   const source=parsed.data;
+  const exists=source.romBase
+    ? await query("SELECT d.id FROM forgeos_devices d JOIN forgeos_device_rom_bases b ON b.device_id=d.id WHERE d.id=$1 AND b.rom_base=$2 AND b.enabled=true",[id.data,source.romBase])
+    : await query("SELECT id FROM forgeos_devices WHERE id=$1",[id.data]);
+  if (!exists.rowCount) return fail(reply,404,"device_or_enabled_rom_base_not_found");
   const result=await query(
     "INSERT INTO forgeos_device_sources(device_id,source_kind,rom_base,repository_url,branch_name,source_path) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(device_id,source_kind,rom_base,repository_url,branch_name,source_path) DO UPDATE SET verification_status='pending',verified_commit_sha=NULL,verified_files='[]'::jsonb,verification_error=NULL,last_checked_at=NULL,updated_at=now() RETURNING id",
     [id.data,source.sourceKind,source.romBase??null,source.repositoryUrl.replace(/\/+$/,""),source.branchName,source.sourcePath]
