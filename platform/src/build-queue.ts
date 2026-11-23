@@ -206,18 +206,19 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     try {
       await client.query("BEGIN");
       await client.query(
-        `UPDATE forgeos_build_jobs SET status=CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'pending' END,
-          worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
-          error_code=CASE WHEN attempts >= max_attempts THEN 'worker_lease_expired' ELSE error_code END,
-          error_message=CASE WHEN attempts >= max_attempts THEN 'Worker lease expired too many times' ELSE error_message END,
-          completed_at=CASE WHEN attempts >= max_attempts THEN now() ELSE NULL END,
-          updated_at=now()
-         WHERE status='leased' AND lease_expires_at < now()`
-      );
-      await client.query(
-        `UPDATE forgeos_rom_configurations c SET status='draft'
-         FROM forgeos_build_jobs j WHERE j.configuration_id=c.id AND j.status='failed'
-           AND j.error_code='worker_lease_expired'`
+        `WITH expired AS (
+          UPDATE forgeos_build_jobs SET status=CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'pending' END,
+            worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
+            error_code=CASE WHEN attempts >= max_attempts THEN 'worker_lease_expired' ELSE error_code END,
+            error_message=CASE WHEN attempts >= max_attempts THEN 'Worker lease expired too many times' ELSE error_message END,
+            completed_at=CASE WHEN attempts >= max_attempts THEN now() ELSE NULL END,
+            updated_at=now()
+          WHERE status='leased' AND lease_expires_at < now()
+          RETURNING configuration_id,status,error_code
+        )
+        UPDATE forgeos_rom_configurations c SET status='draft'
+        FROM expired e WHERE c.id=e.configuration_id AND c.status='queued'
+          AND e.status='failed' AND e.error_code='worker_lease_expired'`
       );
       const claimed = await client.query(
         `WITH candidate AS (
