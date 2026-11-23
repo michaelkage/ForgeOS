@@ -116,7 +116,7 @@ Mutating authenticated requests require the CSRF token returned by login/registe
 
 ## Production gaps
 
-Before public deployment, add email verification and password reset, MFA/passkeys, session revocation UI, audit logs, periodic upstream source revalidation, signed provenance, and observability. The current GitHub resolver verifies public repository structure and records a commit SHA; it does not establish buildability, maintainer authority, device safety, or licensing rights. Root options are recorded for configuration continuity but are not injected. Build submission remains blocked until an isolated worker, quotas, artifact storage, signing, and a threat-reviewed build pipeline are deployed.
+Before public deployment, add email verification and password reset, MFA/passkeys, session revocation UI, audit logs, periodic upstream source revalidation, signed provenance, and observability. The current GitHub resolver verifies public repository structure and records a commit SHA; it does not establish buildability, maintainer authority, device safety, or licensing rights. Root options are recorded for configuration continuity but are not injected. Keep ENABLE_ANDROID_BUILDS=false until isolated workers, quotas, private artifact storage, signing, and a threat-reviewed build pipeline are deployed; the API's feature flag is an operator gate, not proof that those controls exist.
 
 Never put signing keys, Git credentials, vendor blobs, or build secrets in this service or in the browser.
 
