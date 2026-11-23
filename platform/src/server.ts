@@ -12,6 +12,7 @@ import { configSchema, deviceSchema, loginSchema, registerSchema } from "./schem
 import { createSession, destroySession, hashPassword, loadSession, requireAdmin, requireCsrf, requireUser, verifyPassword } from "./security.js";
 import { validateRepositoryManifest } from "./manifest.js";
 import { deviceSourceSchema, verifyDeviceSource } from "./device-resolver.js";
+import { registerBuildRoutes } from "./build-queue.js";
 
 const app = Fastify({ logger: true, trustProxy: config.TRUST_PROXY.length ? config.TRUST_PROXY : false, bodyLimit: 256 * 1024 });
 await app.register(helmet, {
@@ -324,10 +325,7 @@ app.post("/api/configurations/:id/validate", async (request,reply) => {
   await query("UPDATE forgeos_rom_configurations SET status=$3,validation_report=$4 WHERE id=$1 AND user_id=$2",[id.data,request.user!.id,report.valid?"validated":"draft",report]);
   return {report};
 });
-app.post("/api/configurations/:id/queue", async (request,reply) => {
-  if (!requireUser(request,reply) || !requireCsrf(request,reply)) return;
-  return fail(reply,503,"android_build_workers_not_configured");
-});
+await registerBuildRoutes(app);
 
 app.setNotFoundHandler((_request,reply)=>reply.code(404).send({error:"not_found"}));
 app.setErrorHandler((error,request,reply)=>{request.log.error(error);reply.code(500).send({error:"internal_server_error"});});
