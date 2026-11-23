@@ -253,6 +253,21 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
                 AND s.verified_commit_sha=j.snapshot->'deviceTree'->>'commitSha'
               WHERE d.id=(j.snapshot->'device'->>'id')::uuid AND d.enabled=true
             )
+            AND NOT EXISTS (
+              SELECT 1
+              FROM jsonb_array_elements(j.snapshot->'sourceInputs') AS input
+              WHERE NOT EXISTS (
+                SELECT 1 FROM forgeos_device_sources source
+                WHERE source.device_id=(j.snapshot->'device'->>'id')::uuid
+                  AND source.source_kind=(input->>'sourceKind')::forgeos_device_source_kind
+                  AND source.rom_base IS NOT DISTINCT FROM NULLIF(input->>'romBase','')::forgeos_rom_base
+                  AND source.repository_url=input->>'repositoryUrl'
+                  AND source.branch_name=input->>'branch'
+                  AND source.source_path=input->>'sourcePath'
+                  AND source.verified_commit_sha=input->>'commitSha'
+                  AND source.verification_status='verified'
+              )
+            )
           RETURNING configuration_id
         )
         UPDATE forgeos_rom_configurations c SET status='draft'
