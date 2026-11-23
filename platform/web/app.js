@@ -1,4 +1,4 @@
-let csrfToken=null, currentUser=null, devices=[];
+let csrfToken=null, currentUser=null, devices=[], buildSubmissionEnabled=false;
 const $=s=>document.querySelector(s);
 const notice=(message,kind="")=>{$("#notice").textContent=message;$("#notice").className="status "+kind;};
 async function api(path,options={}){
@@ -40,10 +40,19 @@ async function loadAdminDevices(){
 
 async function loadConfigs(){
  const data=await api("/api/configurations");
- $("#configs").innerHTML=data.configurations.length?data.configurations.map(c=>'<article class="card"><h3>'+esc(c.name)+'</h3><div><span class="tag">'+esc(c.rom_base)+'</span><span class="tag">'+esc(c.status)+'</span><span class="tag">'+esc(c.root_method)+'</span></div><p>'+esc(c.manufacturer)+" "+esc(c.model)+" · "+esc(c.codename)+'</p><div class="actions"><button class="secondary" data-validate="'+c.id+'">Validate</button></div><pre class="muted" id="report-'+c.id+'"></pre></article>').join(""):"No saved configurations yet.";
+ $("#configs").innerHTML=data.configurations.length?data.configurations.map(c=>'<article class="card"><h3>'+esc(c.name)+'</h3><div><span class="tag">'+esc(c.rom_base)+'</span><span class="tag">'+esc(c.status)+'</span><span class="tag">'+esc(c.root_method)+'</span></div><p>'+esc(c.manufacturer)+" "+esc(c.model)+" · "+esc(c.codename)+'</p><div class="actions"><button class="secondary" data-validate="'+c.id+'">Validate</button>'+(c.status==="validated"&&buildSubmissionEnabled?'<button data-queue="'+c.id+'">Queue build</button>':'')+'</div><pre class="muted" id="report-'+c.id+'"></pre></article>').join(""):"No saved configurations yet.";
+}
+async function loadBuildStatus(){
+ const data=await api("/api/builds/status");
+ buildSubmissionEnabled=data.submissionEnabled;
+ $("#buildAvailability").textContent=buildSubmissionEnabled?"Build submission is enabled. Jobs are dispatched to registered workers.":"Build execution is disabled by the server operator. Configurations can still be saved and validated.";
+}
+async function loadBuildJobs(){
+ const data=await api("/api/build-jobs");
+ $("#buildJobs").innerHTML=data.jobs.length?data.jobs.map(job=>'<article class="card"><div class="actions"><strong>'+esc(job.id)+'</strong><span class="tag">'+esc(job.status)+'</span></div><p>Attempts: '+esc(job.attempts)+' / '+esc(job.max_attempts)+' · Created: '+esc(new Date(job.created_at).toLocaleString())+'</p>'+(job.error_message?'<p class="status bad">'+esc(job.error_code)+': '+esc(job.error_message)+'</p>':'')+(job.artifact_sha256?'<p class="muted">Artifact SHA-256: '+esc(job.artifact_sha256)+' · '+esc(job.artifact_size_bytes)+' bytes</p>':'')+(['pending','leased'].includes(job.status)?'<button class="secondary" data-cancel-job="'+job.id+'">Cancel job</button>':'')+'</article>').join(""):"No build jobs yet.";
 }
 async function enter(data){
- csrfToken=data.csrfToken;showWorkspace(data.user);await loadDevices();await loadConfigs();notice("Signed in. Choose a supported device and save a configuration.","good");
+ csrfToken=data.csrfToken;showWorkspace(data.user);await loadDevices();await loadBuildStatus();await loadConfigs();await loadBuildJobs();notice("Signed in. Choose a supported device and save a configuration.","good");
 }
 $("#loginForm").addEventListener("submit",async e=>{e.preventDefault();try{await enter(await api("/api/auth/login",{method:"POST",body:JSON.stringify(formData(e.currentTarget))}));}catch(err){notice(err.message,"bad");}});
 $("#registerForm").addEventListener("submit",async e=>{e.preventDefault();try{await enter(await api("/api/auth/register",{method:"POST",body:JSON.stringify(formData(e.currentTarget))}));}catch(err){notice(err.message,"bad");}});
@@ -55,12 +64,22 @@ $("#configForm").addEventListener("submit",async e=>{
  try{await api("/api/configurations",{method:"POST",body:JSON.stringify(payload)});f.reset();await loadConfigs();notice("Configuration saved as a draft.","good");}catch(err){notice(err.message,"bad");}
 });
 $("#configs").addEventListener("click",async e=>{
- const id=e.target?.dataset?.validate;if(!id)return;
+ const target=e.target;
+ if(!(target instanceof HTMLElement))return;
+ const queueId=target.dataset.queue;
+ if(queueId){try{const result=await api("/api/configurations/"+queueId+"/queue",{method:"POST",body:"{}"});notice("Build job "+result.job.id+" queued.","good");await loadConfigs();await loadBuildJobs();}catch(err){notice(err.message,"bad");}return;}
+ const id=target.dataset.validate;if(!id)return;
  const out=$("#report-"+id);out.textContent="Validating…";
  try{const data=await api("/api/configurations/"+id+"/validate",{method:"POST",body:"{}"});out.textContent=JSON.stringify(data.report,null,2);await loadConfigs();notice(data.report.valid?"Configuration validated.":"Validation found issues; review the report.","good");}
  catch(err){out.textContent=err.message;notice(err.message,"bad");}
 });
 
+$("#refreshJobs").addEventListener("click",async()=>{try{await loadBuildStatus();await loadBuildJobs();await loadConfigs();notice("Build job list refreshed.","good");}catch(err){notice(err.message,"bad");}});
+$("#buildJobs").addEventListener("click",async e=>{
+ const target=e.target;if(!(target instanceof HTMLElement))return;
+ const id=target.dataset.cancelJob;if(!id)return;
+ try{await api("/api/build-jobs/"+id+"/cancel",{method:"POST",body:"{}"});await loadBuildJobs();await loadConfigs();notice("Build job cancelled.","good");}catch(err){notice(err.message,"bad");}
+});
 $("#adminDeviceInventory").addEventListener("click",async e=>{
  const target=e.target;
  if(!(target instanceof HTMLElement))return;
