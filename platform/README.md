@@ -67,6 +67,43 @@ Do not expose database credentials to the browser or grant users direct SQL acce
 - POST /api/configurations/:id/validate — validate manifest and device/base mapping
 - POST /api/configurations/:id/queue — deliberately disabled (503)
 
+
+### Device source registration
+
+Create the device profile disabled, then register and verify one device-tree source for each ROM base that will be enabled:
+
+```json
+{
+  "sourceKind": "device",
+  "romBase": "lineage",
+  "repositoryUrl": "https://github.com/LineageOS/android_device_vendor_codename",
+  "branchName": "lineage-24.0",
+  "sourcePath": ""
+}
+```
+
+Use `romBase: "crdroid"` and the matching device-tree branch for a crDroid profile. `sourcePath` is a repository-relative directory; an empty string checks the repository root. The API accepts `kernel` and `vendor` source kinds as additional provenance records; their `romBase` is optional. A device is visible in the public catalog only after every enabled ROM base has a verified device-tree source and an administrator activates it.
+
+### ROM configuration payload
+
+```json
+{
+  "name": "Daily driver",
+  "deviceId": "00000000-0000-4000-8000-000000000001",
+  "romBase": "lineage",
+  "rootMethod": "none",
+  "manifestRevision": "lineage-24.0",
+  "options": {
+    "includeGapps": false,
+    "includeMicroG": false,
+    "debloatPackages": ["com.example.unwantedapp"],
+    "featureFlags": {}
+  }
+}
+```
+
+Google apps and microG are mutually exclusive. Root, app package, and feature selections are persisted as configuration metadata only until the corresponding build-time integrations are implemented.
+
 Mutating authenticated requests require the CSRF token returned by login/register or /api/auth/me in the x-csrf-token header. Send the session cookie with credentials from the frontend.
 
 ## Production gaps
