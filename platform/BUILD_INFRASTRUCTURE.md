@@ -1,6 +1,6 @@
 # ForgeOS build execution security design
 
-Status: mixed implementation and architecture contract. The API now implements S3-compatible SigV4 presigned upload/download URLs, lease-bound upload intents, conditional write-once uploads, server-side HEAD checks, streamed SHA-256 verification, and owner-authorized downloads. This does not mean a storage provider is configured or that build execution is safe to enable. Disposable Android worker isolation, process-tree cancellation, isolated ROM signing, and production observability are not implemented. Keep `ENABLE_ANDROID_BUILDS=false` until every launch gate below is implemented and tested.
+Status: mixed implementation and architecture contract. The API now implements S3-compatible SigV4 presigned upload/download URLs, lease-bound upload intents, conditional write-once uploads, server-side HEAD checks, streamed SHA-256 verification, and owner-authorized downloads. This does not mean a storage provider is configured or that build execution is safe to enable. Disposable Android VM isolation, cgroup resource enforcement, isolated ROM signing, and production observability are not implemented. A reusable process-group supervisor primitive is implemented and tested, but is not yet wired into a production worker runtime. Keep `ENABLE_ANDROID_BUILDS=false` until every launch gate below is implemented and tested.
 
 ## Trust boundaries
 
