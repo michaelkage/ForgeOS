@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS forgeos_build_jobs (
      AND length(artifact_object_key) BETWEEN 3 AND 512
      AND artifact_object_key ~ '^[A-Za-z0-9][A-Za-z0-9/_.-]*$'
      AND position('//' IN artifact_object_key) = 0
+     AND artifact_object_key !~ '(^|/)[.][.]?(/|$)'
      AND artifact_sha256 IS NOT NULL
      AND artifact_sha256 ~ '^[a-f0-9]{64}$'
      AND artifact_size_bytes IS NOT NULL
