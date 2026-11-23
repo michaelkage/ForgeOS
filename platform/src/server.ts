@@ -113,7 +113,7 @@ app.post("/api/admin/devices/:id/sources", async (request,reply) => {
   const source=parsed.data;
   const result=await query(
     "INSERT INTO forgeos_device_sources(device_id,source_kind,repository_url,branch_name,source_path) VALUES($1,$2,$3,$4,$5) ON CONFLICT(device_id,source_kind,repository_url,branch_name,source_path) DO UPDATE SET verification_status='pending',verified_commit_sha=NULL,verified_files='[]'::jsonb,verification_error=NULL,last_checked_at=NULL,updated_at=now() RETURNING id",
-    [id.data,source.sourceKind,source.repositoryUrl.replace(/\\/$/,""),source.branchName,source.sourcePath]
+    [id.data,source.sourceKind,source.repositoryUrl.replace(/\/+$/,""),source.branchName,source.sourcePath]
   );
   await query("UPDATE forgeos_devices SET enabled=false WHERE id=$1",[id.data]);
   return reply.code(201).send({sourceId:result.rows[0]!.id,status:"pending"});
