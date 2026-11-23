@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 const envSchema = z.object({
@@ -7,6 +8,7 @@ const envSchema = z.object({
   HOST: z.string().default("127.0.0.1"),
   DATABASE_URL: z.string().min(1),
   WEB_ORIGIN: z.string().url().default("http://127.0.0.1:4100"),
+  MANIFEST_ROOT: z.string().default(fileURLToPath(new URL("../../", import.meta.url))),
   SESSION_COOKIE_NAME: z.string().default("forgeos_session"),
   SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(168),
   COOKIE_SECURE: z.string().default("false").transform(v => v === "true"),
