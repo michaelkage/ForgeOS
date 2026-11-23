@@ -63,6 +63,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
          JOIN forgeos_device_rom_bases b ON b.device_id=d.id AND b.rom_base=c.rom_base
          JOIN forgeos_device_sources s ON s.device_id=d.id AND s.rom_base=c.rom_base
            AND s.source_kind='device' AND s.verification_status='verified'
+           AND s.verified_commit_sha = c.validation_report->'deviceTreeSource'->>'commitSha'
          WHERE c.id=$1 AND c.user_id=$2 AND c.status='validated'
            AND d.enabled=true AND b.enabled=true
          ORDER BY s.last_checked_at DESC NULLS LAST LIMIT 1 FOR UPDATE OF c`,
@@ -164,6 +165,11 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
           updated_at=now()
          WHERE status='leased' AND lease_expires_at < now()`
       );
+      await client.query(
+        `UPDATE forgeos_rom_configurations c SET status='draft'
+         FROM forgeos_build_jobs j WHERE j.configuration_id=c.id AND j.status='failed'
+           AND j.error_code='worker_lease_expired'`
+      );
       const claimed = await client.query(
         `WITH candidate AS (
           SELECT id FROM forgeos_build_jobs WHERE status='pending' AND attempts < max_attempts
@@ -237,6 +243,9 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         parsed.data.errorCode, parsed.data.message]
     );
     if (!result.rowCount) return reply.code(409).send({ error: "worker_lease_lost" });
+    if (result.rows[0]!.status === "failed") {
+      await query("UPDATE forgeos_rom_configurations SET status='draft' WHERE id=(SELECT configuration_id FROM forgeos_build_jobs WHERE id=$1) AND status='queued'", [id.data]);
+    }
     return { job: result.rows[0] };
   });
 }
