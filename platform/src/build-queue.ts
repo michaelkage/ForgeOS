@@ -255,16 +255,16 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
             )
             AND NOT EXISTS (
               SELECT 1
-              FROM jsonb_array_elements(j.snapshot->'sourceInputs') AS input
+              FROM jsonb_array_elements(j.snapshot->'sourceInputs') AS inputs(source)
               WHERE NOT EXISTS (
                 SELECT 1 FROM forgeos_device_sources source
                 WHERE source.device_id=(j.snapshot->'device'->>'id')::uuid
-                  AND source.source_kind=(input->>'sourceKind')::forgeos_device_source_kind
-                  AND source.rom_base IS NOT DISTINCT FROM NULLIF(input->>'romBase','')::forgeos_rom_base
-                  AND source.repository_url=input->>'repositoryUrl'
-                  AND source.branch_name=input->>'branch'
-                  AND source.source_path=input->>'sourcePath'
-                  AND source.verified_commit_sha=input->>'commitSha'
+                  AND source.source_kind=(inputs.source->>'sourceKind')::forgeos_device_source_kind
+                  AND source.rom_base IS NOT DISTINCT FROM NULLIF(inputs.source->>'romBase','')::forgeos_rom_base
+                  AND source.repository_url=inputs.source->>'repositoryUrl'
+                  AND source.branch_name=inputs.source->>'branch'
+                  AND source.source_path=inputs.source->>'sourcePath'
+                  AND source.verified_commit_sha=inputs.source->>'commitSha'
                   AND source.verification_status='verified'
               )
             )
