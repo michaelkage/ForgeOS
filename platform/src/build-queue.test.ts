@@ -4,7 +4,6 @@ import { buildArtifactSchema, verifyBuildSnapshot, workerClaimSchema } from "./b
 import { createHash } from "node:crypto";
 
 const validArtifact = {
-  objectKey: "builds/2026/11/job-123/rom.zip",
   sha256: "a".repeat(64),
   sizeBytes: 1024,
   contentType: "application/zip"
