@@ -169,14 +169,13 @@ Before uploading, the worker computes the ZIP's SHA-256 and byte size, then requ
 }
 ```
 
-The API returns a server-generated object key, a short-lived presigned PUT URL, and the exact `content-type`, `content-length`, and `if-none-match: *` headers. The conditional write prevents a replayed upload URL from overwriting an already-created artifact object. The worker uploads directly to storage and then reports that same object key, digest, byte size, and content type to completion:
+The API returns a server-generated object key, a short-lived presigned PUT URL, and the exact `content-type`, `content-length`, and `if-none-match: *` headers. The conditional write prevents a replayed upload URL from overwriting an already-created artifact object. The worker uploads directly to storage and reports only the digest, byte size, and content type to completion. The server retrieves the object key from the upload intent; the worker cannot select or substitute a key:
 
 ```json
 {
   "workerId": "worker-eu-01",
   "leaseToken": "00000000-0000-4000-8000-000000000001",
   "artifact": {
-    "objectKey": "builds/2026/01/job-id/rom.zip",
     "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "sizeBytes": 123456789,
     "contentType": "application/zip"
