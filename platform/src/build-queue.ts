@@ -131,7 +131,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
           id: row.id, name: row.name, romBase: row.rom_base, rootMethod: row.root_method,
           manifestRevision: row.manifest_revision, options: row.options
         },
-        device: { codename: row.codename, manufacturer: row.manufacturer, model: row.model, architecture: row.architecture },
+        device: { id: row.device_id, codename: row.codename, manufacturer: row.manufacturer, model: row.model, architecture: row.architecture },
         manifest: { path: row.manifest_path, branch: row.branch_name },
         deviceTree: {
           repositoryUrl: row.repository_url, branch: row.source_branch,
@@ -233,6 +233,31 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
+      await client.query(
+        `WITH stale AS (
+          UPDATE forgeos_build_jobs j SET status='failed',worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
+            error_code='source_provenance_invalidated',
+            error_message='Device or verified source provenance changed after this job was queued',
+            completed_at=now(),updated_at=now()
+          WHERE j.status IN ('pending','leased')
+            AND NOT EXISTS (
+              SELECT 1
+              FROM forgeos_devices d
+              JOIN forgeos_device_rom_bases b ON b.device_id=d.id
+                AND b.rom_base=(j.snapshot->'configuration'->>'romBase')::forgeos_rom_base
+                AND b.enabled=true
+              JOIN forgeos_device_sources s ON s.device_id=d.id
+                AND s.source_kind='device'
+                AND s.rom_base=b.rom_base
+                AND s.verification_status='verified'
+                AND s.verified_commit_sha=j.snapshot->'deviceTree'->>'commitSha'
+              WHERE d.id=(j.snapshot->'device'->>'id')::uuid AND d.enabled=true
+            )
+          RETURNING configuration_id
+        )
+        UPDATE forgeos_rom_configurations c SET status='draft'
+        FROM stale s WHERE c.id=s.configuration_id AND c.status='queued'`
+      );
       await client.query(
         `WITH expired AS (
           UPDATE forgeos_build_jobs SET status=CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'pending' END,
