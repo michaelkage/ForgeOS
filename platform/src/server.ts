@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
-import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import { z } from "zod";
@@ -31,7 +31,7 @@ await app.register(helmet, {
 });
 await app.register(cookie);
 await app.register(cors, { origin: config.WEB_ORIGIN, credentials: true, methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"] });
-await app.register(fastifyStatic, { root: resolve(process.cwd(), "web"), index: ["index.html"] });
+await app.register(fastifyStatic, { root: fileURLToPath(new URL("../web", import.meta.url)), index: ["index.html"] });
 await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
 app.addHook("onRequest", async request => { await loadSession(request); });
 app.addHook("onRequest", async (request, reply) => {
@@ -306,7 +306,7 @@ app.post("/api/configurations/:id/validate", async (request,reply) => {
   );
   const row=result.rows[0] as {rom_base:string;root_method:string;manifest_revision:string|null;device_enabled:boolean;base_enabled:boolean;manifest_path:string;branch_name:string;codename:string}|undefined;
   if (!row) return fail(reply,404,"configuration_not_found");
-  const manifest=await validateRepositoryManifest(process.env.MANIFEST_ROOT??"..",row.manifest_path);
+  const manifest=await validateRepositoryManifest(config.MANIFEST_ROOT,row.manifest_path);
   const errors=[...manifest.errors];
   if (!row.device_enabled) errors.push("Selected device is disabled");
   if (!row.base_enabled) errors.push("Selected ROM base is disabled for this device");
