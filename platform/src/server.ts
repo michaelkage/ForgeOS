@@ -264,13 +264,13 @@ app.put("/api/configurations/:id", async (request,reply) => {
   if (!id.success || !parsed.success) return fail(reply,400,"invalid_configuration");
   const c=parsed.data;
   const supported=await query(
-    "SELECT 1 FROM forgeos_devices d JOIN forgeos_device_rom_bases b ON b.device_id=d.id WHERE d.id=$1 AND d.enabled=true AND b.rom_base=$2 AND b.enabled=true",
+    "SELECT b.branch_name FROM forgeos_devices d JOIN forgeos_device_rom_bases b ON b.device_id=d.id WHERE d.id=$1 AND d.enabled=true AND b.rom_base=$2 AND b.enabled=true",
     [c.deviceId,c.romBase]
   );
   if (!supported.rowCount) return fail(reply,422,"device_or_rom_base_not_supported");
   const result=await query(
     "UPDATE forgeos_rom_configurations SET device_id=$3,name=$4,rom_base=$5,root_method=$6,manifest_revision=$7,options=$8,status='draft',validation_report=NULL WHERE id=$1 AND user_id=$2 RETURNING id,status,updated_at",
-    [id.data,request.user!.id,c.deviceId,c.name,c.romBase,c.rootMethod,c.manifestRevision??null,c.options]
+    [id.data,request.user!.id,c.deviceId,c.name,c.romBase,c.rootMethod,c.manifestRevision??supported.rows[0]!.branch_name,c.options]
   );
   if (!result.rowCount) return fail(reply,404,"configuration_not_found");
   return {configuration:result.rows[0]};
