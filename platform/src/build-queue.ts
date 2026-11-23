@@ -5,6 +5,7 @@ import { pool, query } from "./db.js";
 import { config } from "./config.js";
 import { requireCsrf, requireUser } from "./security.js";
 import { validateRepositoryManifest } from "./manifest.js";
+import { createArtifactDownloadUrl, createArtifactUploadUrl, verifyUploadedArtifact } from "./artifact-storage.js";
 
 export const workerClaimSchema = z.object({
   workerId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/),
@@ -29,6 +30,10 @@ export const buildArtifactSchema = z.object({
     contentType: z.literal("application/zip")
 }).strict();
 const completionSchema = leaseSchema.extend({ artifact: buildArtifactSchema }).strict();
+const uploadIntentSchema = leaseSchema.extend({
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  sizeBytes: z.number().int().positive().max(20 * 1024 * 1024 * 1024)
+}).strict();
 const MAX_ACTIVE_BUILD_JOBS_PER_USER = 2;
 
 function canonicalJson(value: unknown): string {
@@ -209,6 +214,23 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     return { job: result.rows[0] };
   });
 
+  app.post("/api/build-jobs/:id/download", async (request, reply) => {
+    if (!requireUser(request, reply) || !requireCsrf(request, reply)) return;
+    const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
+    if (!id.success) return reply.code(400).send({ error: "invalid_build_job_id" });
+    const result = await query<{ artifact_object_key: string }>(
+      "SELECT artifact_object_key FROM forgeos_build_jobs WHERE id=$1 AND user_id=$2 AND status='succeeded' AND artifact_verified_at IS NOT NULL AND artifact_object_key IS NOT NULL",
+      [id.data, request.user!.id]
+    );
+    if (!result.rowCount) return reply.code(404).send({ error: "verified_build_artifact_not_found" });
+    try {
+      return { url: createArtifactDownloadUrl(result.rows[0]!.artifact_object_key, 300), expiresInSeconds: 300 };
+    } catch (error) {
+      request.log.error(error);
+      return reply.code(503).send({ error: "artifact_storage_unavailable" });
+    }
+  });
+
   app.post("/api/build-jobs/:id/cancel", async (request, reply) => {
     if (!requireUser(request, reply) || !requireCsrf(request, reply)) return;
     const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
@@ -344,36 +366,103 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     return { job: result.rows[0] };
   });
 
+  app.post("/api/internal/build-jobs/:id/artifact-upload", async (request, reply) => {
+    if (!workerAuthorized(request, reply)) return;
+    const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
+    const parsed = uploadIntentSchema.safeParse(request.body);
+    if (!id.success || !parsed.success) return reply.code(400).send({ error: "invalid_artifact_upload_intent" });
+    try {
+      const lease = await query<{ user_id: string; attempts: number }>(
+        "SELECT user_id,attempts FROM forgeos_build_jobs WHERE id=$1 AND status='leased' AND worker_id=$2 AND lease_token=$3 AND lease_expires_at > now()",
+        [id.data, parsed.data.workerId, parsed.data.leaseToken]
+      );
+      if (!lease.rowCount) return reply.code(409).send({ error: "worker_lease_lost" });
+      const existing = await query<{ object_key: string; expected_sha256: string; expected_size_bytes: string; expires_at: Date }>(
+        "SELECT object_key,expected_sha256,expected_size_bytes,expires_at FROM forgeos_artifact_upload_intents WHERE build_job_id=$1 AND lease_token=$2",
+        [id.data, parsed.data.leaseToken]
+      );
+      let objectKey: string, expiresAt: Date;
+      if (existing.rowCount) {
+        const intent = existing.rows[0]!;
+        if (intent.expected_sha256 !== parsed.data.sha256 || Number(intent.expected_size_bytes) !== parsed.data.sizeBytes || intent.expires_at.getTime() <= Date.now()) {
+          return reply.code(409).send({ error: "artifact_upload_intent_conflict" });
+        }
+        objectKey = intent.object_key;
+        expiresAt = intent.expires_at;
+      } else {
+        objectKey = "artifacts/" + lease.rows[0]!.user_id + "/" + id.data + "/" + lease.rows[0]!.attempts + "/" + randomUUID() + ".zip";
+        const inserted = await query<{ expires_at: Date }>(
+          `INSERT INTO forgeos_artifact_upload_intents(build_job_id,worker_id,lease_token,object_key,expected_sha256,expected_size_bytes,expires_at)
+           VALUES($1,$2,$3,$4,$5,$6,now()+interval '10 minutes') RETURNING expires_at`,
+          [id.data, parsed.data.workerId, parsed.data.leaseToken, objectKey, parsed.data.sha256, parsed.data.sizeBytes]
+        );
+        expiresAt = inserted.rows[0]!.expires_at;
+      }
+      return {
+        objectKey,
+        method: "PUT",
+        url: createArtifactUploadUrl(objectKey, parsed.data.sizeBytes, Math.max(1, Math.min(600, Math.floor((expiresAt.getTime() - Date.now()) / 1000)))),
+        requiredHeaders: { "content-type": "application/zip", "content-length": String(parsed.data.sizeBytes) },
+        expiresAt
+      };
+    } catch (error) {
+      request.log.error(error);
+      return reply.code(503).send({ error: "artifact_storage_unavailable" });
+    }
+  });
+
   app.post("/api/internal/build-jobs/:id/complete", async (request, reply) => {
     if (!workerAuthorized(request, reply)) return;
     const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
     const parsed = completionSchema.safeParse(request.body);
     if (!id.success || !parsed.success) return reply.code(400).send({ error: "invalid_build_completion" });
-    const client = await pool.connect();
+    const artifact = parsed.data.artifact;
     try {
-      await client.query("BEGIN");
-      const result = await client.query(
-        `UPDATE forgeos_build_jobs SET status='succeeded',artifact_object_key=$4,artifact_sha256=$5,
-          artifact_size_bytes=$6,artifact_content_type=$7,completed_at=now(),updated_at=now(),
-          lease_token=NULL,lease_expires_at=NULL,worker_id=NULL
-         WHERE id=$1 AND status='leased' AND worker_id=$2 AND lease_token=$3 AND lease_expires_at > now()
-         RETURNING id,configuration_id,status,artifact_sha256,artifact_size_bytes,completed_at`,
-        [id.data, parsed.data.workerId, parsed.data.leaseToken, parsed.data.artifact.objectKey,
-          parsed.data.artifact.sha256, parsed.data.artifact.sizeBytes, parsed.data.artifact.contentType]
+      const intent = await query<{ expected_sha256: string; expected_size_bytes: string; object_key: string }>(
+        `SELECT i.expected_sha256,i.expected_size_bytes,i.object_key
+         FROM forgeos_artifact_upload_intents i
+         JOIN forgeos_build_jobs j ON j.id=i.build_job_id
+         WHERE i.build_job_id=$1 AND i.worker_id=$2 AND i.lease_token=$3
+           AND i.object_key=$4 AND i.expires_at > now() AND i.verified_at IS NULL
+           AND j.status='leased' AND j.worker_id=$2 AND j.lease_token=$3 AND j.lease_expires_at > now()`,
+        [id.data, parsed.data.workerId, parsed.data.leaseToken, artifact.objectKey]
       );
-      if (!result.rowCount) {
-        await client.query("ROLLBACK");
-        return reply.code(409).send({ error: "worker_lease_lost" });
+      if (!intent.rowCount) return reply.code(409).send({ error: "artifact_upload_intent_missing_or_expired" });
+      if (intent.rows[0]!.expected_sha256 !== artifact.sha256 || Number(intent.rows[0]!.expected_size_bytes) !== artifact.sizeBytes || artifact.contentType !== "application/zip") {
+        return reply.code(422).send({ error: "artifact_metadata_does_not_match_upload_intent" });
       }
-      await client.query("UPDATE forgeos_rom_configurations SET status='validated' WHERE id=$1 AND status='queued'", [result.rows[0]!.configuration_id]);
-      await client.query("COMMIT");
-      return { job: result.rows[0] };
+      await verifyUploadedArtifact(artifact.objectKey, artifact.sizeBytes, artifact.sha256);
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const result = await client.query(
+          `UPDATE forgeos_build_jobs SET status='succeeded',artifact_object_key=$4,artifact_sha256=$5,
+            artifact_size_bytes=$6,artifact_content_type='application/zip',artifact_verified_at=now(),
+            completed_at=now(),updated_at=now(),lease_token=NULL,lease_expires_at=NULL,worker_id=NULL
+           WHERE id=$1 AND status='leased' AND worker_id=$2 AND lease_token=$3 AND lease_expires_at > now()
+           RETURNING id,configuration_id,status,artifact_sha256,artifact_size_bytes,artifact_verified_at,completed_at`,
+          [id.data, parsed.data.workerId, parsed.data.leaseToken, artifact.objectKey, artifact.sha256, artifact.sizeBytes]
+        );
+        if (!result.rowCount) {
+          await client.query("ROLLBACK");
+          return reply.code(409).send({ error: "worker_lease_lost" });
+        }
+        await client.query("UPDATE forgeos_artifact_upload_intents SET verified_at=now() WHERE build_job_id=$1 AND lease_token=$2 AND verified_at IS NULL", [id.data, parsed.data.leaseToken]);
+        await client.query("UPDATE forgeos_rom_configurations SET status='validated' WHERE id=$1 AND status='queued'", [result.rows[0]!.configuration_id]);
+        await client.query("COMMIT");
+        return { job: result.rows[0] };
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
     } catch (error) {
-      await client.query("ROLLBACK");
       request.log.error(error);
-      return reply.code(500).send({ error: "build_completion_failed" });
-    } finally {
-      client.release();
+      if (error instanceof Error && /not present|size or content type|could not be read|exceeds its declared size|SHA-256 verification/.test(error.message)) {
+        return reply.code(422).send({ error: "artifact_verification_failed" });
+      }
+      return reply.code(503).send({ error: "artifact_storage_unavailable" });
     }
   });
 
