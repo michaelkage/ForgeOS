@@ -82,7 +82,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
       await client.query("BEGIN");
       const selected = await client.query(
         `SELECT c.id,c.user_id,c.name,c.rom_base,c.root_method,c.manifest_revision,c.options,c.updated_at,c.validation_report,
-          d.codename,d.manufacturer,d.model,d.architecture,b.manifest_path,b.branch_name,
+          d.id AS device_id,d.codename,d.manufacturer,d.model,d.architecture,b.manifest_path,b.branch_name,
           s.repository_url,s.branch_name AS source_branch,s.source_path,s.verified_commit_sha
          FROM forgeos_rom_configurations c
          JOIN forgeos_devices d ON d.id=c.device_id
@@ -117,6 +117,14 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         await client.query("ROLLBACK");
         return reply.code(429).send({ error: "active_build_job_limit_reached", limit: MAX_ACTIVE_BUILD_JOBS_PER_USER });
       }
+      const sourceInputs = await client.query(
+        `SELECT source_kind,rom_base,repository_url,branch_name,source_path,verified_commit_sha
+         FROM forgeos_device_sources
+         WHERE device_id=$1 AND verification_status='verified'
+           AND (rom_base IS NULL OR rom_base=$2)
+         ORDER BY source_kind,rom_base NULLS FIRST,repository_url,branch_name`,
+        [row.device_id, row.rom_base]
+      );
       const snapshot = {
         schemaVersion: 1,
         configuration: {
@@ -129,6 +137,11 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
           repositoryUrl: row.repository_url, branch: row.source_branch,
           sourcePath: row.source_path, commitSha: row.verified_commit_sha
         },
+        sourceInputs: sourceInputs.rows.map(source => ({
+          sourceKind: source.source_kind, romBase: source.rom_base,
+          repositoryUrl: source.repository_url, branch: source.branch_name,
+          sourcePath: source.source_path, commitSha: source.verified_commit_sha
+        })),
         validationReport: row.validation_report,
         configurationUpdatedAt: row.updated_at
       };
