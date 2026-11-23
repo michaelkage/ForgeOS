@@ -61,13 +61,13 @@ export function createArtifactUploadUrl(objectKey: string, sizeBytes: number, ex
   const s = storageSettings(), url = objectUrl(objectKey), now = new Date();
   const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, ""), date = amzDate.slice(0, 8);
   const scope = date + "/" + s.region + "/s3/aws4_request";
-  const headers = { host: url.host, "content-length": String(sizeBytes), "content-type": "application/zip" };
+  const headers = { host: url.host, "content-length": String(sizeBytes), "content-type": "application/zip", "if-none-match": "*" };
   const params: Record<string, string> = {
     "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
     "X-Amz-Credential": s.accessKey + "/" + scope,
     "X-Amz-Date": amzDate,
     "X-Amz-Expires": String(expiresSeconds),
-    "X-Amz-SignedHeaders": "content-length;content-type;host"
+    "X-Amz-SignedHeaders": "content-length;content-type;host;if-none-match"
   };
   url.search = canonicalQuery(params);
   const signed = signature("PUT", url, headers, "UNSIGNED-PAYLOAD", now);
@@ -101,7 +101,7 @@ async function signedStorageRequest(method: "HEAD" | "GET", objectKey: string): 
   const auth = "AWS4-HMAC-SHA256 Credential=" + s.accessKey + "/" + amzDate.slice(0, 8) + "/" + s.region +
     "/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=" +
     signature(method, url, headers, payloadHash, now);
-  return fetch(url, { method, headers: { "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate, Authorization: auth }, signal: AbortSignal.timeout(120_000), redirect: "error" });
+  return fetch(url, { method, headers: { "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate, Authorization: auth }, signal: AbortSignal.timeout(45 * 60 * 1000), redirect: "error" });
 }
 
 export async function verifyUploadedArtifact(objectKey: string, expectedSize: number, expectedSha256: string): Promise<void> {
