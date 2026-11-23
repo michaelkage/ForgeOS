@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+const validGitRef = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(value) && !value.includes("..") && !value.includes("//") && !value.includes("@{") && !value.endsWith("/") && !value.endsWith(".") && !value.split("/").some(part => part.endsWith(".lock"));
+
 export const registerSchema = z.object({
   email: z.string().email().max(254).transform(v => v.toLowerCase()),
   password: z.string().min(12).max(128)
@@ -19,7 +21,7 @@ export const deviceSchema = z.object({
   romBases: z.array(z.object({
     base: z.enum(["lineage", "crdroid"]),
     manifestPath: z.enum(["default.xml", "snippets/crdroid.xml"]),
-    branchName: z.string().regex(/^[A-Za-z0-9._/-]{1,100}$/),
+    branchName: z.string().refine(validGitRef, "Invalid Git branch or tag name"),
     enabled: z.boolean().default(true)
   })).max(2).superRefine((bases, ctx) => {
     for (const base of bases) {
@@ -34,11 +36,15 @@ export const configSchema = z.object({
   deviceId: z.string().uuid(),
   romBase: z.enum(["lineage", "crdroid"]),
   rootMethod: z.enum(["none", "magisk", "kernelsu", "apatch"]).default("none"),
-  manifestRevision: z.string().trim().max(100).nullable().optional(),
+  manifestRevision: z.string().trim().min(1).max(100).refine(validGitRef, "Invalid manifest revision").nullable().optional(),
   options: z.object({
     includeGapps: z.boolean().default(false),
     includeMicroG: z.boolean().default(false),
     debloatPackages: z.array(z.string().regex(/^[A-Za-z0-9_.]+$/)).max(100).default([]),
     featureFlags: z.record(z.boolean()).default({})
   }).strict().default({})
-}).strict();
+}).strict().superRefine((configuration, ctx) => {
+  if (configuration.options.includeGapps && configuration.options.includeMicroG) {
+    ctx.addIssue({ code: "custom", message: "Google apps and microG cannot both be selected", path: ["options"] });
+  }
+});
