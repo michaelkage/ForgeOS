@@ -1,6 +1,6 @@
 # ForgeOS build execution security design
 
-Status: architecture contract. This document does not claim that build execution, object storage, signing, or worker isolation is deployed. Keep `ENABLE_ANDROID_BUILDS=false` until every launch gate below is implemented and tested.
+Status: mixed implementation and architecture contract. The API now implements S3-compatible SigV4 presigned upload/download URLs, lease-bound upload intents, conditional write-once uploads, server-side HEAD checks, streamed SHA-256 verification, and owner-authorized downloads. This does not mean a storage provider is configured or that build execution is safe to enable. Disposable Android worker isolation, process-tree cancellation, isolated ROM signing, and production observability are not implemented. Keep `ENABLE_ANDROID_BUILDS=false` until every launch gate below is implemented and tested.
 
 ## Trust boundaries
 
@@ -28,6 +28,10 @@ Use an S3-compatible provider (AWS S3 or MinIO) with:
 The API must create an upload intent only for the active lease matching job ID, worker ID, and lease token. The intent binds the expected object key, maximum size (20 GiB), and ZIP content type. The worker uploads directly to private storage; the API does not accept multi-gigabyte request bodies.
 
 ### 2. Artifact verification and downloads
+
+Implemented in the platform API: the worker obtains a ten-minute upload intent tied to its live lease, expected SHA-256, and exact byte count. The server generates the object key and SigV4 PUT URL. The required headers include `Content-Length`, `Content-Type: application/zip`, and `If-None-Match: *`. Completion requires the same object key/digest/size; the API checks the lease and intent, performs HEAD validation, streams the object through SHA-256, then records verified metadata. User downloads are owner-scoped and use a five-minute presigned GET URL. Configuration requires all S3 settings together, and production endpoints must use HTTPS. This code still needs integration testing against the selected AWS/MinIO provider and production bucket policy.
+
+
 
 A worker's completion report is only a claim, never proof. Before changing a job to `succeeded`, the API must:
 1. lock and re-check the live lease;
