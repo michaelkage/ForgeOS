@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import argon2 from "argon2";
 import { query } from "./db.js";
@@ -65,7 +65,13 @@ export function requireAdmin(request: FastifyRequest, reply: FastifyReply): bool
 }
 export function requireCsrf(request: FastifyRequest, reply: FastifyReply): boolean {
   const supplied = request.headers["x-csrf-token"];
-  if (typeof supplied !== "string" || !request.csrfToken || supplied !== request.csrfToken) {
+  if (typeof supplied !== "string" || !request.csrfToken) {
+    void reply.code(403).send({ error: "csrf_validation_failed" });
+    return false;
+  }
+  const actual = Buffer.from(supplied, "utf8");
+  const expected = Buffer.from(request.csrfToken, "utf8");
+  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
     void reply.code(403).send({ error: "csrf_validation_failed" });
     return false;
   }
