@@ -4,6 +4,7 @@ import { z } from "zod";
 import { pool, query } from "./db.js";
 import { config } from "./config.js";
 import { requireCsrf, requireUser } from "./security.js";
+import { validateRepositoryManifest } from "./manifest.js";
 
 export const workerClaimSchema = z.object({
   workerId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/),
@@ -100,6 +101,12 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         await client.query("ROLLBACK");
         return reply.code(422).send({ error: "configuration_must_be_validated" });
       }
+      const pinnedManifest = await validateRepositoryManifest(config.MANIFEST_ROOT, row.manifest_path);
+      const validatedManifestSha = (row.validation_report as { manifestSha256?: string }).manifestSha256;
+      if (!pinnedManifest.ok || !pinnedManifest.content || !pinnedManifest.sha256 || pinnedManifest.sha256 !== validatedManifestSha) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: "manifest_changed_revalidate_configuration" });
+      }
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [request.user!.id]);
       const existing = await client.query(
         "SELECT id,status,created_at FROM forgeos_build_jobs WHERE configuration_id=$1 AND status IN ('pending','leased')",
@@ -132,7 +139,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
           manifestRevision: row.manifest_revision, options: row.options
         },
         device: { id: row.device_id, codename: row.codename, manufacturer: row.manufacturer, model: row.model, architecture: row.architecture },
-        manifest: { path: row.manifest_path, branch: row.branch_name },
+        manifest: { path: row.manifest_path, branch: row.branch_name, sha256: pinnedManifest.sha256, content: pinnedManifest.content },
         deviceTree: {
           repositoryUrl: row.repository_url, branch: row.source_branch,
           sourcePath: row.source_path, commitSha: row.verified_commit_sha
