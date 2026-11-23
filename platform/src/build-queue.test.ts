@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildArtifactSchema, verifyBuildSnapshot } from "./build-queue.js";
+import { buildArtifactSchema, verifyBuildSnapshot, workerClaimSchema } from "./build-queue.js";
 import { createHash } from "node:crypto";
 
 const validArtifact = {
@@ -42,4 +42,17 @@ test("verifies canonical snapshot fingerprints independent of object key order",
   assert.equal(verifyBuildSnapshot(first, digest), true);
   assert.equal(verifyBuildSnapshot(reordered, digest), true);
   assert.equal(verifyBuildSnapshot(reordered, "0".repeat(64)), false);
+});
+
+test("worker claim requires explicit supported architectures and ROM bases", () => {
+  const claim = {
+    workerId: "worker-eu-01",
+    leaseSeconds: 180,
+    architectures: ["arm64"],
+    romBases: ["lineage", "crdroid"]
+  };
+  assert.equal(workerClaimSchema.safeParse(claim).success, true);
+  assert.equal(workerClaimSchema.safeParse({ ...claim, architectures: [] }).success, false);
+  assert.equal(workerClaimSchema.safeParse({ ...claim, romBases: ["evolution"] }).success, false);
+  assert.equal(workerClaimSchema.safeParse({ ...claim, leaseSeconds: 10 }).success, false);
 });
