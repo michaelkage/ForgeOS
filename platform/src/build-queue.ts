@@ -316,21 +316,36 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
     const parsed = failureSchema.safeParse(request.body);
     if (!id.success || !parsed.success) return reply.code(400).send({ error: "invalid_build_failure" });
-    const result = await query(
-      `UPDATE forgeos_build_jobs SET
-        status=CASE WHEN $4::boolean AND attempts < max_attempts THEN 'pending' ELSE 'failed' END,
-        error_code=$5,error_message=$6,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
-        completed_at=CASE WHEN NOT ($4::boolean AND attempts < max_attempts) THEN now() ELSE NULL END,
-        updated_at=now()
-       WHERE id=$1 AND status='leased' AND worker_id=$2 AND lease_token=$3 AND lease_expires_at > now()
-       RETURNING id,status,attempts,max_attempts`,
-      [id.data, parsed.data.workerId, parsed.data.leaseToken, parsed.data.retryable,
-        parsed.data.errorCode, parsed.data.message]
-    );
-    if (!result.rowCount) return reply.code(409).send({ error: "worker_lease_lost" });
-    if (result.rows[0]!.status === "failed") {
-      await query("UPDATE forgeos_rom_configurations SET status='draft' WHERE id=(SELECT configuration_id FROM forgeos_build_jobs WHERE id=$1) AND status='queued'", [id.data]);
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query(
+        `UPDATE forgeos_build_jobs SET
+          status=CASE WHEN $4::boolean AND attempts < max_attempts THEN 'pending' ELSE 'failed' END,
+          error_code=$5,error_message=$6,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
+          completed_at=CASE WHEN NOT ($4::boolean AND attempts < max_attempts) THEN now() ELSE NULL END,
+          updated_at=now()
+         WHERE id=$1 AND status='leased' AND worker_id=$2 AND lease_token=$3 AND lease_expires_at > now()
+         RETURNING id,status,configuration_id,attempts,max_attempts`,
+        [id.data, parsed.data.workerId, parsed.data.leaseToken, parsed.data.retryable,
+          parsed.data.errorCode, parsed.data.message]
+      );
+      if (!result.rowCount) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: "worker_lease_lost" });
+      }
+      if (result.rows[0]!.status === "failed") {
+        await client.query("UPDATE forgeos_rom_configurations SET status='draft' WHERE id=$1 AND status='queued'", [result.rows[0]!.configuration_id]);
+      }
+      await client.query("COMMIT");
+      const { configuration_id: _configurationId, ...job } = result.rows[0]!;
+      return { job };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      request.log.error(error);
+      return reply.code(500).send({ error: "build_failure_recording_failed" });
+    } finally {
+      client.release();
     }
-    return { job: result.rows[0] };
   });
 }
