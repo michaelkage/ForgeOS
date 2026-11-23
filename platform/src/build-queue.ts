@@ -19,14 +19,13 @@ const failureSchema = leaseSchema.extend({
   retryable: z.boolean().default(true),
   message: z.string().trim().min(1).max(1000)
 }).strict();
-const completionSchema = leaseSchema.extend({
-  artifact: z.object({
+export const buildArtifactSchema = z.object({
     objectKey: z.string().min(3).max(512).regex(/^[A-Za-z0-9][A-Za-z0-9/_-]*$/).refine(value => value.split("/").every(segment => segment.length > 0 && segment !== "." && segment !== "..")),
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
     sizeBytes: z.number().int().positive().max(20 * 1024 * 1024 * 1024),
     contentType: z.literal("application/zip")
-  }).strict()
 }).strict();
+const completionSchema = leaseSchema.extend({ artifact: buildArtifactSchema }).strict();
 
 function workerAuthorized(request: FastifyRequest, reply: FastifyReply): boolean {
   const expected = config.BUILD_WORKER_SHARED_SECRET;
