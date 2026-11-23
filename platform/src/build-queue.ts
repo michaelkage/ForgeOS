@@ -27,6 +27,28 @@ export const buildArtifactSchema = z.object({
 }).strict();
 const completionSchema = leaseSchema.extend({ artifact: buildArtifactSchema }).strict();
 
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number") {
+    if (typeof value === "number" && !Number.isFinite(value)) throw new TypeError("Non-finite number in build snapshot");
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    return "{" + keys.map(key => JSON.stringify(key) + ":" + canonicalJson(record[key])).join(",") + "}";
+  }
+  throw new TypeError("Build snapshot must contain JSON values only");
+}
+
+export function verifyBuildSnapshot(snapshot: unknown, expectedSha256: string): boolean {
+  if (!/^[a-f0-9]{64}$/.test(expectedSha256)) return false;
+  const actual = createHash("sha256").update(canonicalJson(snapshot)).digest("hex");
+  const actualBytes = Buffer.from(actual, "hex");
+  const expectedBytes = Buffer.from(expectedSha256, "hex");
+  return timingSafeEqual(actualBytes, expectedBytes);
+}
+
 function workerAuthorized(request: FastifyRequest, reply: FastifyReply): boolean {
   const expected = config.BUILD_WORKER_SHARED_SECRET;
   const header = request.headers.authorization;
@@ -88,7 +110,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         validationReport: row.validation_report,
         configurationUpdatedAt: row.updated_at
       };
-      const fingerprint = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+      const fingerprint = createHash("sha256").update(canonicalJson(snapshot)).digest("hex");
       const inserted = await client.query(
         `INSERT INTO forgeos_build_jobs(user_id,configuration_id,snapshot,snapshot_sha256)
          VALUES($1,$2,$3,$4)
@@ -186,6 +208,9 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         RETURNING j.id,j.snapshot,j.snapshot_sha256,j.attempts,j.max_attempts,j.lease_token,j.lease_expires_at`,
         [parsed.data.workerId, randomUUID(), parsed.data.leaseSeconds]
       );
+      if (claimed.rows[0] && !verifyBuildSnapshot(claimed.rows[0].snapshot, claimed.rows[0].snapshot_sha256)) {
+        throw new Error("Stored build snapshot fingerprint mismatch");
+      }
       await client.query("COMMIT");
       return { job: claimed.rows[0] ?? null };
     } catch (error) {
