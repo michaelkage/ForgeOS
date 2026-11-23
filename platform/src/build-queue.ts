@@ -175,6 +175,9 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     if (!requireUser(request, reply)) return;
     const result = await query(
       `SELECT id,configuration_id,status,attempts,max_attempts,error_code,error_message,
+        snapshot_sha256,snapshot->'configuration'->>'name' AS configuration_name,
+        snapshot->'device'->>'codename' AS device_codename,
+        snapshot->'configuration'->>'romBase' AS rom_base,
         artifact_sha256,artifact_size_bytes,created_at,started_at,completed_at,updated_at
        FROM forgeos_build_jobs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100`,
       [request.user!.id]
@@ -188,6 +191,9 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     if (!id.success) return reply.code(400).send({ error: "invalid_build_job_id" });
     const result = await query(
       `SELECT id,configuration_id,status,attempts,max_attempts,error_code,error_message,
+        snapshot_sha256,snapshot->'configuration'->>'name' AS configuration_name,
+        snapshot->'device'->>'codename' AS device_codename,
+        snapshot->'configuration'->>'romBase' AS rom_base,
         artifact_sha256,artifact_size_bytes,created_at,started_at,completed_at,updated_at
        FROM forgeos_build_jobs WHERE id=$1 AND user_id=$2`,
       [id.data, request.user!.id]
