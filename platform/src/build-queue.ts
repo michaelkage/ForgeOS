@@ -223,18 +223,15 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     const queryParams = request.query as { after?: string };
     const after = queryParams.after === undefined ? null : /^[0-9]{1,18}$/.test(queryParams.after) ? queryParams.after : undefined;
     if (!id.success || after === undefined) return reply.code(400).send({ error: "invalid_build_event_cursor" });
+    const owned = await query("SELECT 1 FROM forgeos_build_jobs WHERE id=$1 AND user_id=$2", [id.data, request.user!.id]);
+    if (!owned.rowCount) return reply.code(404).send({ error: "build_job_not_found" });
     const result = await query(
-      `SELECT e.id,e.attempt,e.worker_id,e.event_type,e.details,e.created_at
-       FROM forgeos_build_job_events e
-       JOIN forgeos_build_jobs j ON j.id=e.build_job_id
-       WHERE j.id=$1 AND j.user_id=$2 AND ($3::bigint IS NULL OR e.id>$3)
-       ORDER BY e.id ASC LIMIT 100`,
-      [id.data, request.user!.id, after]
+      `SELECT id,attempt,worker_id,event_type,details,created_at
+       FROM forgeos_build_job_events
+       WHERE build_job_id=$1 AND ($2::bigint IS NULL OR id>$2)
+       ORDER BY id ASC LIMIT 100`,
+      [id.data, after]
     );
-    if (!result.rowCount && after === null) {
-      const owned = await query("SELECT 1 FROM forgeos_build_jobs WHERE id=$1 AND user_id=$2", [id.data, request.user!.id]);
-      if (!owned.rowCount) return reply.code(404).send({ error: "build_job_not_found" });
-    }
     const events = result.rows;
     return { events, nextCursor: events.length ? String(events[events.length - 1]!.id) : after };
   });
