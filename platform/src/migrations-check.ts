@@ -42,6 +42,10 @@ try {
     "SELECT indexname FROM pg_indexes WHERE schemaname='public' AND tablename='forgeos_build_jobs'"
   );
   assert.ok(jobIndexes.rows.some(row => row.indexname === "forgeos_build_jobs_one_active_per_config_idx"));
+  const snapshotTrigger = await client.query(
+    "SELECT tgname FROM pg_trigger WHERE tgrelid='forgeos_build_jobs'::regclass AND NOT tgisinternal"
+  );
+  assert.ok(snapshotTrigger.rows.some(row => row.tgname === "forgeos_build_jobs_immutable_snapshot"));
 } finally {
   await client.end();
 }
