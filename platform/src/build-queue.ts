@@ -391,12 +391,19 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         expiresAt = intent.expires_at;
       } else {
         objectKey = "artifacts/" + lease.rows[0]!.user_id + "/" + id.data + "/" + lease.rows[0]!.attempts + "/" + randomUUID() + ".zip";
-        const inserted = await query<{ expires_at: Date }>(
+        const inserted = await query<{ expires_at: Date; object_key: string; expected_sha256: string; expected_size_bytes: string }>(
           `INSERT INTO forgeos_artifact_upload_intents(build_job_id,worker_id,lease_token,object_key,expected_sha256,expected_size_bytes,expires_at)
-           VALUES($1,$2,$3,$4,$5,$6,now()+interval '10 minutes') RETURNING expires_at`,
+           VALUES($1,$2,$3,$4,$5,$6,now()+interval '10 minutes')
+           ON CONFLICT (build_job_id,lease_token) DO UPDATE SET object_key=forgeos_artifact_upload_intents.object_key
+           RETURNING expires_at,object_key,expected_sha256,expected_size_bytes`,
           [id.data, parsed.data.workerId, parsed.data.leaseToken, objectKey, parsed.data.sha256, parsed.data.sizeBytes]
         );
-        expiresAt = inserted.rows[0]!.expires_at;
+        const saved = inserted.rows[0]!;
+        if (saved.expected_sha256 !== parsed.data.sha256 || Number(saved.expected_size_bytes) !== parsed.data.sizeBytes || saved.expires_at.getTime() <= Date.now()) {
+          return reply.code(409).send({ error: "artifact_upload_intent_conflict" });
+        }
+        objectKey = saved.object_key;
+        expiresAt = saved.expires_at;
       }
       return {
         objectKey,
