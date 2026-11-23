@@ -5,7 +5,7 @@ import { pool, query } from "./db.js";
 import { config } from "./config.js";
 import { requireCsrf, requireUser } from "./security.js";
 
-const workerClaimSchema = z.object({
+export const workerClaimSchema = z.object({
   workerId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/),
   leaseSeconds: z.number().int().min(30).max(900).default(180),
   architectures: z.array(z.enum(["arm64", "arm", "x86_64"])).min(1).max(3),
