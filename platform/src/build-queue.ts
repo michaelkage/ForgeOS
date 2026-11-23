@@ -64,7 +64,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
          JOIN forgeos_device_sources s ON s.device_id=d.id AND s.rom_base=c.rom_base
            AND s.source_kind='device' AND s.verification_status='verified'
            AND s.verified_commit_sha = c.validation_report->'deviceTreeSource'->>'commitSha'
-         WHERE c.id=$1 AND c.user_id=$2 AND c.status='validated'
+         WHERE c.id=$1 AND c.user_id=$2 AND c.status IN ('validated','queued')
            AND d.enabled=true AND b.enabled=true
          ORDER BY s.last_checked_at DESC NULLS LAST LIMIT 1 FOR UPDATE OF c`,
         [id.data, request.user!.id]
