@@ -15,6 +15,7 @@ const validDeviceSource = {
 
 test("device source schema rejects non-GitHub hosts and traversal paths", () => {
   assert.equal(deviceSourceSchema.safeParse(validDeviceSource).success, true);
+  assert.equal(deviceSourceSchema.safeParse({ ...validDeviceSource, romBase: undefined }).success, false);
   assert.equal(deviceSourceSchema.safeParse({ ...validDeviceSource, repositoryUrl: "https://evil.example/owner/repo" }).success, false);
   assert.equal(deviceSourceSchema.safeParse({ ...validDeviceSource, sourcePath: "../secrets" }).success, false);
   assert.equal(deviceSourceSchema.safeParse({ ...validDeviceSource, branchName: "../../main" }).success, false);
