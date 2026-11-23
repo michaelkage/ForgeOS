@@ -7,7 +7,8 @@ This service adds account authentication, administrator-managed device profiles,
 - Email/password registration and login using Argon2id.
 - Opaque random session cookies; only SHA-256 token hashes are stored in PostgreSQL.
 - HttpOnly, SameSite=Lax cookies, CSRF checks on mutations, origin checking, security headers, and per-IP rate limits.
-- User/admin roles. Public users can view enabled devices; only admins can create, update, or disable device profiles.
+- User/admin roles. Public users can view enabled devices; only admins can create, update, disable, and activate device profiles.
+- GitHub-backed source provenance for device trees, kernel trees, and vendor source repositories. Device activation is blocked until a device-tree branch is verified.
 - Per-device ROM base compatibility records tied to manifest paths and branches.
 - User-owned ROM configurations with draft, save, update, and validate operations.
 - XML manifest syntax checks, root element checks, safe project path checks, and duplicate project path checks.
@@ -31,6 +32,7 @@ From this directory:
     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/002_device_source_provenance.sql
     npm install
     npm run typecheck
+    npm test
     npm run dev
 
 The API listens on http://127.0.0.1:4100 by default. Set MANIFEST_ROOT to the absolute repository root if the service is not launched from this directory. /healthz is a liveness check and /readyz checks the database.
