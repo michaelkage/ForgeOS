@@ -30,7 +30,9 @@ const completionSchema = leaseSchema.extend({ artifact: buildArtifactSchema }).s
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number") {
     if (typeof value === "number" && !Number.isFinite(value)) throw new TypeError("Non-finite number in build snapshot");
-    return JSON.stringify(value);
+    const encoded = JSON.stringify(value);
+    if (encoded === undefined) throw new TypeError("Unable to serialize build snapshot value");
+    return encoded;
   }
   if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
   if (typeof value === "object") {
