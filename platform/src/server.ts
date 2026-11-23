@@ -13,7 +13,7 @@ import { createSession, destroySession, hashPassword, loadSession, requireAdmin,
 import { validateRepositoryManifest } from "./manifest.js";
 import { deviceSourceSchema, verifyDeviceSource } from "./device-resolver.js";
 
-const app = Fastify({ logger: true, trustProxy: config.NODE_ENV === "production", bodyLimit: 256 * 1024 });
+const app = Fastify({ logger: true, trustProxy: config.TRUST_PROXY.length ? config.TRUST_PROXY : false, bodyLimit: 256 * 1024 });
 await app.register(helmet, {
   contentSecurityPolicy: {
     directives: {
