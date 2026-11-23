@@ -32,6 +32,7 @@ From this directory:
     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/002_device_source_provenance.sql
     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/003_build_queue.sql
     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/004_artifact_storage.sql
+    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/005_build_job_events.sql
     npm install
     npm run typecheck
     npm test
@@ -70,6 +71,7 @@ Do not expose database credentials to the browser or grant users direct SQL acce
 - POST /api/configurations/:id/queue — enqueue a validated configuration when build submission is enabled
 - GET /api/build-jobs — list the authenticated user's build jobs
 - GET /api/build-jobs/:id — read one owned job
+- GET /api/build-jobs/:id/events — read up to 100 append-only lifecycle events for an owned job; use the `after` cursor for pagination
 - POST /api/build-jobs/:id/cancel — cancel a pending or leased job
 - POST /api/build-jobs/:id/download — owner-only short-lived download URL for a verified artifact
 - POST /api/internal/build-jobs/claim — worker-only atomic lease claim
@@ -126,7 +128,7 @@ Never put signing keys, Git credentials, vendor blobs, or build secrets in this 
 
 ### Build queue and worker protocol
 
-Apply migration `003_build_queue.sql`. Build submission is disabled unless both `ENABLE_ANDROID_BUILDS=true` and a `BUILD_WORKER_SHARED_SECRET` of at least 32 characters are configured. The server refuses startup if builds are enabled without the secret.
+Apply migrations `003_build_queue.sql`, `004_artifact_storage.sql`, and `005_build_job_events.sql`. Build submission is disabled unless both `ENABLE_ANDROID_BUILDS=true` and a `BUILD_WORKER_SHARED_SECRET` of at least 32 characters are configured. The server refuses startup if builds are enabled without the secret.
 
 A user can enqueue only a configuration whose latest validation report is valid and whose device and ROM base remain enabled. The queue captures the configuration, exact manifest XML bytes and SHA-256, verified device-tree repository/branch/commit, and all additional verified kernel/vendor source inputs applicable to the selected ROM base into a canonical JSON snapshot and stores its SHA-256 fingerprint. Canonical JSON recursively sorts object keys, preserves array order, and serializes only JSON values. PostgreSQL prevents updates to job identity, ownership, configuration association, snapshot, fingerprint, and creation timestamp. Workers should independently recompute the fingerprint before using the snapshot. A partial unique index prevents more than one pending or leased job per configuration. The API limits each account to two active jobs across distinct configurations. Worker claims must declare supported CPU architectures and ROM bases, so incompatible jobs are not leased.
 
@@ -183,7 +185,7 @@ The API returns a server-generated object key, a short-lived presigned PUT URL, 
 }
 ```
 
-The API does not proxy large file uploads. On completion it checks the live worker lease and unexpired upload intent, performs a storage HEAD check, then streams the object back through SHA-256 verification before it can mark the job successful. It stores the verified timestamp and metadata transactionally. Owner-authorized downloads require an authenticated session and CSRF token and return a five-minute presigned GET URL. The API never accepts a caller-supplied storage key for downloads.
+The API does not proxy large file uploads. Job lifecycle transitions are also recorded in an append-only PostgreSQL event ledger; event payloads are bounded and omit credentials, bearer tokens, and signed URLs. On completion it checks the live worker lease and unexpired upload intent, performs a storage HEAD check, then streams the object back through SHA-256 verification before it can mark the job successful. It stores the verified timestamp and metadata transactionally. Owner-authorized downloads require an authenticated session and CSRF token and return a five-minute presigned GET URL. The API never accepts a caller-supplied storage key for downloads.
 
 This storage integration does not provide disposable worker isolation, process-tree cancellation, ROM signing, or full resource monitoring. Keep `ENABLE_ANDROID_BUILDS=false` until every launch gate in [BUILD_INFRASTRUCTURE.md](./BUILD_INFRASTRUCTURE.md) is implemented and threat-reviewed. A presigned upload intent is scoped to one job lease and one server-generated object key; workers must never receive the API's S3 credentials.
 
