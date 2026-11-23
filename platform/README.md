@@ -12,7 +12,7 @@ This service adds account authentication, administrator-managed device profiles,
 - Per-device ROM base compatibility records tied to manifest paths and branches.
 - User-owned ROM configurations with draft, save, update, and validate operations.
 - XML manifest syntax checks, root element checks, safe project path checks, and duplicate project path checks.
-- Build queue endpoint intentionally returns 503 until isolated Android workers and artifact/signing infrastructure exist.
+- Durable build-job queue with immutable configuration/source snapshots, SHA-256 fingerprints, owner-scoped status/cancellation, authenticated worker claims, expiring leases, heartbeats, retry limits, and artifact metadata validation. Android execution remains disabled by default.
 
 ## Repository-specific scope
 
@@ -30,6 +30,7 @@ From this directory:
     # Set DATABASE_URL and WEB_ORIGIN in .env. Set GITHUB_TOKEN to a fine-grained read-only GitHub token to avoid low unauthenticated API limits (optional for public repositories).
     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/001_auth_devices_configs.sql
     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/002_device_source_provenance.sql
+    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/003_build_queue.sql
     npm install
     npm run typecheck
     npm test
@@ -65,7 +66,14 @@ Do not expose database credentials to the browser or grant users direct SQL acce
 - GET /api/configurations/:id — read an owned configuration
 - PUT /api/configurations/:id — update an owned configuration
 - POST /api/configurations/:id/validate — validate manifest and device/base mapping
-- POST /api/configurations/:id/queue — deliberately disabled (503)
+- POST /api/configurations/:id/queue — enqueue a validated configuration when build submission is enabled
+- GET /api/build-jobs — list the authenticated user's build jobs
+- GET /api/build-jobs/:id — read one owned job
+- POST /api/build-jobs/:id/cancel — cancel a pending or leased job
+- POST /api/internal/build-jobs/claim — worker-only atomic lease claim
+- POST /api/internal/build-jobs/:id/heartbeat — worker-only lease renewal
+- POST /api/internal/build-jobs/:id/complete — worker-only completion and artifact metadata registration
+- POST /api/internal/build-jobs/:id/fail — worker-only failure reporting and retry scheduling
 
 
 ### Device source registration
@@ -111,3 +119,53 @@ Mutating authenticated requests require the CSRF token returned by login/registe
 Before public deployment, add email verification and password reset, MFA/passkeys, session revocation UI, audit logs, periodic upstream source revalidation, signed provenance, and observability. The current GitHub resolver verifies public repository structure and records a commit SHA; it does not establish buildability, maintainer authority, device safety, or licensing rights. Root options are recorded for configuration continuity but are not injected. Build submission remains blocked until an isolated worker, quotas, artifact storage, signing, and a threat-reviewed build pipeline are deployed.
 
 Never put signing keys, Git credentials, vendor blobs, or build secrets in this service or in the browser.
+
+
+### Build queue and worker protocol
+
+Apply migration `003_build_queue.sql`. Build submission is disabled unless both `ENABLE_ANDROID_BUILDS=true` and a `BUILD_WORKER_SHARED_SECRET` of at least 32 characters are configured. The server refuses startup if builds are enabled without the secret.
+
+A user can enqueue only a configuration whose latest validation report is valid and whose device and ROM base remain enabled. The queue captures the configuration, manifest mapping, and verified device-tree repository/branch/commit into a canonical JSON snapshot and stores its SHA-256 fingerprint. A partial unique index prevents more than one pending or leased job per configuration.
+
+Worker endpoints require `Authorization: Bearer <BUILD_WORKER_SHARED_SECRET>`. Claims use PostgreSQL row locks with `SKIP LOCKED`; each claim returns a unique lease token and expiry. Workers must heartbeat before lease expiry. A stale lease is reclaimed on the next claim, up to three attempts. A worker must include its worker ID and lease token on heartbeat, completion, and failure calls. Lost or expired leases are rejected with HTTP 409.
+
+Claim request:
+
+```json
+{ "workerId": "worker-eu-01", "leaseSeconds": 180 }
+```
+
+Heartbeat request:
+
+```json
+{ "workerId": "worker-eu-01", "leaseToken": "00000000-0000-4000-8000-000000000001", "leaseSeconds": 180 }
+```
+
+Failure request:
+
+```json
+{
+  "workerId": "worker-eu-01",
+  "leaseToken": "00000000-0000-4000-8000-000000000001",
+  "errorCode": "source_sync_failed",
+  "retryable": true,
+  "message": "Repository sync failed with exit code 128"
+}
+```
+
+Completion is accepted only after the worker has uploaded a ZIP artifact to private object storage. The worker reports its storage key, SHA-256, byte size, and content type:
+
+```json
+{
+  "workerId": "worker-eu-01",
+  "leaseToken": "00000000-0000-4000-8000-000000000001",
+  "artifact": {
+    "objectKey": "builds/2026/01/job-id/rom.zip",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "sizeBytes": 123456789,
+    "contentType": "application/zip"
+  }
+}
+```
+
+The API stores artifact metadata only. It does not accept file uploads, issue signed download URLs, verify the object exists, or sign ROM images. Those operations belong in the isolated worker and private artifact-storage service.
