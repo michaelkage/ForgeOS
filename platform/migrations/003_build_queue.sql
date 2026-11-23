@@ -62,3 +62,23 @@ CREATE INDEX IF NOT EXISTS forgeos_build_jobs_expired_lease_idx
 DROP TRIGGER IF EXISTS forgeos_build_jobs_touch ON forgeos_build_jobs;
 CREATE TRIGGER forgeos_build_jobs_touch BEFORE UPDATE ON forgeos_build_jobs
 FOR EACH ROW EXECUTE FUNCTION forgeos_touch_updated_at();
+
+CREATE OR REPLACE FUNCTION forgeos_build_job_protect_snapshot()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.id IS DISTINCT FROM OLD.id
+     OR NEW.user_id IS DISTINCT FROM OLD.user_id
+     OR NEW.configuration_id IS DISTINCT FROM OLD.configuration_id
+     OR NEW.snapshot IS DISTINCT FROM OLD.snapshot
+     OR NEW.snapshot_sha256 IS DISTINCT FROM OLD.snapshot_sha256
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'Build job identity and input snapshot are immutable'
+      USING ERRCODE = '23000';
+  END IF;
+  RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS forgeos_build_jobs_immutable_snapshot ON forgeos_build_jobs;
+CREATE TRIGGER forgeos_build_jobs_immutable_snapshot
+BEFORE UPDATE ON forgeos_build_jobs
+FOR EACH ROW EXECUTE FUNCTION forgeos_build_job_protect_snapshot();
