@@ -11,7 +11,8 @@ try {
     new URL("../migrations/001_auth_devices_configs.sql", import.meta.url),
     new URL("../migrations/002_device_source_provenance.sql", import.meta.url),
     new URL("../migrations/003_build_queue.sql", import.meta.url),
-    new URL("../migrations/004_artifact_storage.sql", import.meta.url)
+    new URL("../migrations/004_artifact_storage.sql", import.meta.url),
+    new URL("../migrations/005_build_job_events.sql", import.meta.url)
   ];
   for (let pass = 0; pass < 2; pass++) {
     for (const migration of migrations) {
@@ -63,6 +64,10 @@ try {
   for (const required of ["build_job_id", "worker_id", "lease_token", "object_key", "expected_sha256", "expected_size_bytes", "expires_at", "verified_at"]) {
     assert.ok(artifactNames.has(required), "Missing artifact storage column: " + required);
   }
+  const eventTable = await client.query("SELECT to_regclass('public.forgeos_build_job_events') AS name");
+  assert.ok(eventTable.rows[0]?.name, "Missing append-only build event table");
+  const eventTrigger = await client.query("SELECT tgname FROM pg_trigger WHERE tgrelid='forgeos_build_job_events'::regclass AND NOT tgisinternal");
+  assert.ok(eventTrigger.rows.some(row => row.tgname === "forgeos_build_job_events_append_only"));
 } finally {
   await client.end();
 }
