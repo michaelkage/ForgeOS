@@ -203,7 +203,7 @@ app.post("/api/admin/devices/:id/activate", async (request,reply) => {
   const id=z.string().uuid().safeParse((request.params as {id?:string}).id);
   if (!id.success) return fail(reply,400,"invalid_device_id");
   const result=await query(
-    "UPDATE forgeos_devices d SET enabled=true WHERE d.id=$1 AND EXISTS (SELECT 1 FROM forgeos_device_sources s WHERE s.device_id=d.id AND s.source_kind='device' AND s.verification_status='verified') AND EXISTS (SELECT 1 FROM forgeos_device_rom_bases b WHERE b.device_id=d.id AND b.enabled=true) RETURNING d.id",
+    "UPDATE forgeos_devices d SET enabled=true WHERE d.id=$1 AND EXISTS (SELECT 1 FROM forgeos_device_sources s WHERE s.device_id=d.id AND s.source_kind='device' AND s.verification_status='verified') AND NOT EXISTS (SELECT 1 FROM forgeos_device_sources s WHERE s.device_id=d.id AND s.source_kind='device' AND s.verification_status<>'verified') AND EXISTS (SELECT 1 FROM forgeos_device_rom_bases b WHERE b.device_id=d.id AND b.enabled=true) RETURNING d.id",
     [id.data]
   );
   if (!result.rowCount) return fail(reply,422,"verified_device_source_and_rom_base_required");
