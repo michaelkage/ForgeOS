@@ -23,8 +23,12 @@ function storageSettings() {
   return { endpoint, region: S3_REGION, bucket: S3_BUCKET, accessKey: S3_ACCESS_KEY_ID, secretKey: S3_SECRET_ACCESS_KEY };
 }
 
+export function isSafeArtifactObjectKey(key: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9/_.-]{2,511}$/.test(key) && key.split("/").every(part => part.length > 0 && part !== "." && part !== "..");
+}
+
 function objectUrl(key: string): URL {
-  if (!/^[A-Za-z0-9][A-Za-z0-9/_.-]{2,511}$/.test(key) || key.split("/").some(part => !part || part === "." || part === "..")) {
+  if (!isSafeArtifactObjectKey(key)) {
     throw new Error("Invalid private artifact object key");
   }
   const s = storageSettings();
