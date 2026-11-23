@@ -9,7 +9,8 @@ try {
   await client.connect();
   const migrations = [
     new URL("../migrations/001_auth_devices_configs.sql", import.meta.url),
-    new URL("../migrations/002_device_source_provenance.sql", import.meta.url)
+    new URL("../migrations/002_device_source_provenance.sql", import.meta.url),
+    new URL("../migrations/003_build_queue.sql", import.meta.url)
   ];
   for (const migration of migrations) {
     await client.query(await readFile(migration, "utf8"));
@@ -29,6 +30,18 @@ try {
     "SELECT indexname FROM pg_indexes WHERE schemaname='public' AND tablename='forgeos_device_sources'"
   );
   assert.ok(indexes.rows.some(row => row.indexname === "forgeos_device_sources_unscoped_unique_idx"));
+
+  const jobColumns = await client.query(
+    "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='forgeos_build_jobs'"
+  );
+  const jobNames = new Set(jobColumns.rows.map(row => row.column_name));
+  for (const required of ["snapshot", "snapshot_sha256", "status", "attempts", "lease_token", "lease_expires_at", "artifact_sha256"]) {
+    assert.ok(jobNames.has(required), "Missing build queue column: " + required);
+  }
+  const jobIndexes = await client.query(
+    "SELECT indexname FROM pg_indexes WHERE schemaname='public' AND tablename='forgeos_build_jobs'"
+  );
+  assert.ok(jobIndexes.rows.some(row => row.indexname === "forgeos_build_jobs_one_active_per_config_idx"));
 } finally {
   await client.end();
 }
