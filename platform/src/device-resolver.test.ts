@@ -7,6 +7,7 @@ afterEach(() => { globalThis.fetch = originalFetch; });
 
 const validDeviceSource = {
   sourceKind: "device" as const,
+  romBase: "lineage" as const,
   repositoryUrl: "https://github.com/LineageOS/android_device_example",
   branchName: "lineage-24.0",
   sourcePath: ""
