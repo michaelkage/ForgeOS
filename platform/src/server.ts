@@ -254,7 +254,8 @@ app.post("/api/configurations", async (request,reply) => {
   const c=parsed.data;
   const supported=await query<{manifest_path:string;branch_name:string}>(
     `SELECT b.manifest_path,b.branch_name FROM forgeos_devices d JOIN forgeos_device_rom_bases b ON b.device_id=d.id
-      WHERE d.id=$1 AND d.enabled=true AND b.rom_base=$2 AND b.enabled=true`,[c.deviceId,c.romBase]
+      WHERE d.id=$1 AND d.enabled=true AND b.rom_base=$2 AND b.enabled=true
+        AND EXISTS (SELECT 1 FROM forgeos_device_sources s WHERE s.device_id=d.id AND s.source_kind='device' AND s.rom_base=b.rom_base AND s.verification_status='verified')`,[c.deviceId,c.romBase]
   );
   if (!supported.rowCount) return fail(reply,422,"device_or_rom_base_not_supported");
   const result=await query(
@@ -282,7 +283,7 @@ app.put("/api/configurations/:id", async (request,reply) => {
   if (!id.success || !parsed.success) return fail(reply,400,"invalid_configuration");
   const c=parsed.data;
   const supported=await query(
-    "SELECT b.branch_name FROM forgeos_devices d JOIN forgeos_device_rom_bases b ON b.device_id=d.id WHERE d.id=$1 AND d.enabled=true AND b.rom_base=$2 AND b.enabled=true",
+    "SELECT b.branch_name FROM forgeos_devices d JOIN forgeos_device_rom_bases b ON b.device_id=d.id WHERE d.id=$1 AND d.enabled=true AND b.rom_base=$2 AND b.enabled=true AND EXISTS (SELECT 1 FROM forgeos_device_sources s WHERE s.device_id=d.id AND s.source_kind='device' AND s.rom_base=b.rom_base AND s.verification_status='verified')",
     [c.deviceId,c.romBase]
   );
   if (!supported.rowCount) return fail(reply,422,"device_or_rom_base_not_supported");
@@ -306,14 +307,20 @@ app.post("/api/configurations/:id/validate", async (request,reply) => {
   );
   const row=result.rows[0] as {rom_base:string;root_method:string;manifest_revision:string|null;device_enabled:boolean;base_enabled:boolean;manifest_path:string;branch_name:string;codename:string}|undefined;
   if (!row) return fail(reply,404,"configuration_not_found");
+  const sourceResult=await query(
+    "SELECT repository_url,branch_name,verified_commit_sha,verification_status,last_checked_at FROM forgeos_device_sources WHERE device_id=(SELECT device_id FROM forgeos_rom_configurations WHERE id=$1) AND source_kind='device' AND rom_base=$2 ORDER BY last_checked_at DESC NULLS LAST",
+    [id.data,row.rom_base]
+  );
+  const pinnedSource=sourceResult.rows.find(source=>source.verification_status==="verified" && typeof source.verified_commit_sha==="string") as {repository_url:string;branch_name:string;verified_commit_sha:string;last_checked_at:Date|null}|undefined;
   const manifest=await validateRepositoryManifest(config.MANIFEST_ROOT,row.manifest_path);
   const errors=[...manifest.errors];
+  if (!pinnedSource) errors.push("No verified device-tree source is pinned for this ROM base");
   if (!row.device_enabled) errors.push("Selected device is disabled");
   if (!row.base_enabled) errors.push("Selected ROM base is disabled for this device");
   if (row.manifest_revision && row.manifest_revision!==row.branch_name) errors.push("Manifest revision does not match the verified device/base branch");
   const warnings=["This validates configuration and manifest metadata only; it does not sync or compile Android source."];
   if (row.root_method!=="none") warnings.push("Selected root method is recorded only; root patching and boot image modification are not implemented.");
-  const report={valid:errors.length===0,device:row.codename,romBase:row.rom_base,rootMethod:row.root_method,manifestPath:row.manifest_path,projectCount:manifest.projectCount,errors,warnings};
+  const report={valid:errors.length===0,device:row.codename,romBase:row.rom_base,rootMethod:row.root_method,manifestPath:row.manifest_path,projectCount:manifest.projectCount,deviceTreeSource:pinnedSource?{repositoryUrl:pinnedSource.repository_url,branchName:pinnedSource.branch_name,commitSha:pinnedSource.verified_commit_sha,lastCheckedAt:pinnedSource.last_checked_at}:null,errors,warnings};
   await query("UPDATE forgeos_rom_configurations SET status=$3,validation_report=$4 WHERE id=$1 AND user_id=$2",[id.data,request.user!.id,report.valid?"validated":"draft",report]);
   return {report};
 });
