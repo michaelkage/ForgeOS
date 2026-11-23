@@ -293,7 +293,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
           SELECT id FROM forgeos_build_jobs WHERE status='pending' AND attempts < max_attempts
             AND snapshot->'device'->>'architecture'=ANY($4::text[])
             AND snapshot->'configuration'->>'romBase'=ANY($5::text[])
-          ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
+          ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED
         )
         UPDATE forgeos_build_jobs j SET status='leased',worker_id=$1,lease_token=$2,
           lease_expires_at=now()+($3::text || ' seconds')::interval,
