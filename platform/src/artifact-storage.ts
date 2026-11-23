@@ -90,7 +90,7 @@ export function createArtifactDownloadUrl(objectKey: string, expiresSeconds = 30
   return url.toString();
 }
 
-async function signedStorageRequest(method: "HEAD" | "GET", objectKey: string): Promise<Response> {
+async function signedStorageRequest(method: "HEAD" | "GET", objectKey: string, timeoutMs: number): Promise<Response> {
   const s = storageSettings(), url = objectUrl(objectKey), now = new Date();
   const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, ""), payloadHash = "UNSIGNED-PAYLOAD";
   const headers = {
@@ -101,28 +101,38 @@ async function signedStorageRequest(method: "HEAD" | "GET", objectKey: string): 
   const auth = "AWS4-HMAC-SHA256 Credential=" + s.accessKey + "/" + amzDate.slice(0, 8) + "/" + s.region +
     "/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=" +
     signature(method, url, headers, payloadHash, now);
-  return fetch(url, { method, headers: { "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate, Authorization: auth }, signal: AbortSignal.timeout(45 * 60 * 1000), redirect: "error" });
+  return fetch(url, { method, headers: { "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate, Authorization: auth }, signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
 }
 
 export async function verifyUploadedArtifact(objectKey: string, expectedSize: number, expectedSha256: string): Promise<void> {
-  const head = await signedStorageRequest("HEAD", objectKey);
+  const head = await signedStorageRequest("HEAD", objectKey, 15_000);
   if (!head.ok) throw new Error("Artifact object is not present in private storage");
   const size = Number(head.headers.get("content-length"));
   const contentType = head.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
   if (!Number.isSafeInteger(size) || size !== expectedSize || contentType !== "application/zip") {
     throw new Error("Stored artifact size or content type does not match its upload intent");
   }
-  const response = await signedStorageRequest("GET", objectKey);
-  if (!response.ok || !response.body) throw new Error("Artifact could not be read back for integrity verification");
+  const response = await signedStorageRequest("GET", objectKey, 45 * 60 * 1000);
+  if (!response.ok || !response.body) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error("Artifact could not be read back for integrity verification");
+  }
   const digest = createHash("sha256");
   let bytes = 0;
-  for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
-    bytes += chunk.byteLength;
-    if (bytes > expectedSize) {
-      await response.body.cancel();
-      throw new Error("Stored artifact exceeds its declared size");
+  const reader = response.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > expectedSize) {
+        await reader.cancel();
+        throw new Error("Stored artifact exceeds its declared size");
+      }
+      digest.update(value);
     }
-    digest.update(chunk);
+  } finally {
+    reader.releaseLock();
   }
   if (bytes !== expectedSize || digest.digest("hex") !== expectedSha256) {
     throw new Error("Stored artifact SHA-256 verification failed");
