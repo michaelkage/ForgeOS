@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { pool, query } from "./db.js";
@@ -88,7 +88,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         validationReport: row.validation_report,
         configurationUpdatedAt: row.updated_at
       };
-      const fingerprint = (await import("node:crypto")).createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
+      const fingerprint = createHash("sha256").update(JSON.stringify(snapshot)).digest("hex");
       const inserted = await client.query(
         `INSERT INTO forgeos_build_jobs(user_id,configuration_id,snapshot,snapshot_sha256)
          VALUES($1,$2,$3,$4)
@@ -193,10 +193,10 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     const parsed = heartbeatSchema.safeParse(request.body);
     if (!id.success || !parsed.success) return reply.code(400).send({ error: "invalid_heartbeat" });
     const result = await query(
-      `UPDATE forgeos_build_jobs SET lease_expires_at=now()+($5::text || ' seconds')::interval,updated_at=now()
+      `UPDATE forgeos_build_jobs SET lease_expires_at=now()+($4::text || ' seconds')::interval,updated_at=now()
        WHERE id=$1 AND status='leased' AND worker_id=$2 AND lease_token=$3 AND lease_expires_at > now()
        RETURNING id,lease_expires_at`,
-      [id.data, parsed.data.workerId, parsed.data.leaseToken, parsed.data.workerId, parsed.data.leaseSeconds]
+      [id.data, parsed.data.workerId, parsed.data.leaseToken, parsed.data.leaseSeconds]
     );
     if (!result.rowCount) return reply.code(409).send({ error: "worker_lease_lost" });
     return { job: result.rows[0] };
