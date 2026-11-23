@@ -29,7 +29,7 @@ SET status='failed',
     worker_id=NULL,lease_token=NULL,lease_expires_at=NULL
 WHERE status='succeeded' AND artifact_verified_at IS NULL;
 
-DO $ BEGIN
+DO $$ BEGIN
   ALTER TABLE forgeos_build_jobs
     ADD CONSTRAINT forgeos_build_job_verified_artifact_check
     CHECK (status <> 'succeeded' OR artifact_verified_at IS NOT NULL);
