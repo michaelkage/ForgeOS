@@ -12,8 +12,10 @@ try {
     new URL("../migrations/002_device_source_provenance.sql", import.meta.url),
     new URL("../migrations/003_build_queue.sql", import.meta.url)
   ];
-  for (const migration of migrations) {
-    await client.query(await readFile(migration, "utf8"));
+  for (let pass = 0; pass < 2; pass++) {
+    for (const migration of migrations) {
+      await client.query(await readFile(migration, "utf8"));
+    }
   }
   const columns = await client.query(
     "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='forgeos_device_sources'"
