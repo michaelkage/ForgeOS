@@ -31,6 +31,7 @@ From this directory:
     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/001_auth_devices_configs.sql
     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/002_device_source_provenance.sql
     psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/003_build_queue.sql
+    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/004_artifact_storage.sql
     npm install
     npm run typecheck
     npm test
@@ -70,9 +71,11 @@ Do not expose database credentials to the browser or grant users direct SQL acce
 - GET /api/build-jobs — list the authenticated user's build jobs
 - GET /api/build-jobs/:id — read one owned job
 - POST /api/build-jobs/:id/cancel — cancel a pending or leased job
+- POST /api/build-jobs/:id/download — owner-only short-lived download URL for a verified artifact
 - POST /api/internal/build-jobs/claim — worker-only atomic lease claim
 - POST /api/internal/build-jobs/:id/heartbeat — worker-only lease renewal
-- POST /api/internal/build-jobs/:id/complete — worker-only completion and artifact metadata registration
+- POST /api/internal/build-jobs/:id/artifact-upload — worker-only lease-bound upload intent and short-lived presigned PUT URL
+- POST /api/internal/build-jobs/:id/complete — worker-only completion after server-side artifact verification
 - POST /api/internal/build-jobs/:id/fail — worker-only failure reporting and retry scheduling
 
 
@@ -153,7 +156,20 @@ Failure request:
 }
 ```
 
-Completion is accepted only after the worker has uploaded a ZIP artifact to private object storage. The worker reports its storage key, SHA-256, byte size, and content type:
+Configure all five S3 settings together: `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY`. Production requires an HTTPS endpoint. Use a private bucket with public access blocked, TLS-only policy, server-side encryption, lifecycle retention, and credentials scoped to this bucket. The API uses path-style S3-compatible addressing and AWS Signature Version 4. Android build enablement refuses startup unless private storage is configured.
+
+Before uploading, the worker computes the ZIP's SHA-256 and byte size, then requests a lease-bound upload intent:
+
+```json
+{
+  "workerId": "worker-eu-01",
+  "leaseToken": "00000000-0000-4000-8000-000000000001",
+  "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "sizeBytes": 123456789
+}
+```
+
+The API returns a server-generated object key, a short-lived presigned PUT URL, and the exact `content-type` and `content-length` headers. The worker uploads directly to storage and then reports that same object key, digest, byte size, and content type to completion:
 
 ```json
 {
@@ -168,7 +184,9 @@ Completion is accepted only after the worker has uploaded a ZIP artifact to priv
 }
 ```
 
-The API stores artifact metadata only. It does not accept file uploads, issue signed download URLs, verify the object exists, or sign ROM images. Those operations belong in the isolated worker and private artifact-storage service.
+The API does not proxy large file uploads. On completion it checks the live worker lease and unexpired upload intent, performs a storage HEAD check, then streams the object back through SHA-256 verification before it can mark the job successful. It stores the verified timestamp and metadata transactionally. Owner-authorized downloads require an authenticated session and CSRF token and return a five-minute presigned GET URL. The API never accepts a caller-supplied storage key for downloads.
+
+This storage integration does not provide disposable worker isolation, process-tree cancellation, ROM signing, or full resource monitoring. Keep `ENABLE_ANDROID_BUILDS=false` until every launch gate in [BUILD_INFRASTRUCTURE.md](./BUILD_INFRASTRUCTURE.md) is implemented and threat-reviewed. A presigned upload intent is scoped to one job lease and one server-generated object key; workers must never receive the API's S3 credentials.
 
 ## Build infrastructure security contract
 
