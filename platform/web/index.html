@@ -57,7 +57,12 @@ button{border:0;border-radius:9px;background:var(--accent);color:#071326;padding
 <div class="checks"><label><input type="checkbox" name="lineage"> LineageOS</label><label><input type="checkbox" name="crdroid"> crDroid</label></div>
 <div class="field"><label>Lineage branch</label><input name="lineageBranch" value="lineage-24.0"></div>
 <div class="field"><label>crDroid branch</label><input name="crdroidBranch" value="17.0"></div>
-<button type="submit">Add verified device profile</button>
+<div class="field"><label>Device tree GitHub repository URL</label><input name="deviceRepositoryUrl" type="url" placeholder="https://github.com/LineageOS/android_device_vendor_codename" required></div>
+<div class="grid">
+<div class="field"><label>Device tree repository branch</label><input name="deviceRepositoryBranch" placeholder="lineage-24.0" required></div>
+<div class="field"><label>Device tree path within repository (optional)</label><input name="deviceRepositoryPath" placeholder="device/vendor/codename"></div>
+</div>
+<button type="submit">Add device and verify source</button>
 </form></section>
 </section>
 <div class="warning">Build execution is disabled. Root choices and app/debloat options are stored as configuration metadata only; this service does not inject root, modify system images, sync source, or produce flashable ZIPs.</div>
@@ -118,9 +123,17 @@ $("#deviceForm").addEventListener("submit",async e=>{
  if(f.lineage.checked)romBases.push({base:"lineage",manifestPath:"default.xml",branchName:d.lineageBranch,enabled:true});
  if(f.crdroid.checked)romBases.push({base:"crdroid",manifestPath:"snippets/crdroid.xml",branchName:d.crdroidBranch,enabled:true});
  if(!romBases.length){notice("Select at least one ROM base.","bad");return;}
- const payload={codename:d.codename,manufacturer:d.manufacturer,model:d.model,chipset:d.chipset||null,architecture:d.architecture,enabled:true,notes:null,romBases};
- try{await api("/api/admin/devices",{method:"POST",body:JSON.stringify(payload)});f.reset();await loadDevices();notice("Device profile added. Verify the branch and manifest before publishing support.","good");}
- catch(err){notice(err.message,"bad");}
+ const payload={codename:d.codename,manufacturer:d.manufacturer,model:d.model,chipset:d.chipset||null,architecture:d.architecture,enabled:false,notes:null,romBases};
+ try{
+  const created=await api("/api/admin/devices",{method:"POST",body:JSON.stringify(payload)});
+  const source=await api("/api/admin/devices/"+created.id+"/sources",{method:"POST",body:JSON.stringify({
+   sourceKind:"device",repositoryUrl:d.deviceRepositoryUrl,branchName:d.deviceRepositoryBranch,sourcePath:d.deviceRepositoryPath||""
+  })});
+  const verification=await api("/api/admin/devices/"+created.id+"/sources/"+source.sourceId+"/verify",{method:"POST",body:"{}"});
+  if(verification.status!=="verified")throw new Error("Device source verification failed: "+verification.error+"; profile remains disabled.");
+  await api("/api/admin/devices/"+created.id+"/activate",{method:"POST",body:"{}"});
+  f.reset();await loadDevices();notice("Device tree verified at commit "+verification.commitSha.slice(0,12)+" and device activated.","good");
+ }catch(err){await loadDevices().catch(()=>{});notice(err.message,"bad");}
 });
 (async()=>{try{const data=await api("/api/auth/me");await enter(data);}catch{}})();
 </script>
