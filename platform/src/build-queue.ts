@@ -221,7 +221,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     if (!requireUser(request, reply)) return;
     const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
     const queryParams = request.query as { after?: string };
-    const after = queryParams.after === undefined ? null : /^\\d{1,18}$/.test(queryParams.after) ? queryParams.after : undefined;
+    const after = queryParams.after === undefined ? null : /^[0-9]{1,18}$/.test(queryParams.after) ? queryParams.after : undefined;
     if (!id.success || after === undefined) return reply.code(400).send({ error: "invalid_build_event_cursor" });
     const result = await query(
       `SELECT e.id,e.attempt,e.worker_id,e.event_type,e.details,e.created_at
@@ -267,7 +267,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         `UPDATE forgeos_build_jobs SET status='cancelled',lease_token=NULL,lease_expires_at=NULL,
           worker_id=NULL,completed_at=now(),updated_at=now()
          WHERE id=$1 AND user_id=$2 AND status IN ('pending','leased')
-         RETURNING id,status,configuration_id`,
+         RETURNING id,status,configuration_id,attempts`,
         [id.data, request.user!.id]
       );
       if (!result.rowCount) {
