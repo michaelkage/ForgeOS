@@ -15,6 +15,11 @@ const envSchema = z.object({
   COOKIE_SECURE: z.string().default("false").transform(v => v === "true"),
   ENABLE_ANDROID_BUILDS: z.string().default("false").transform(v => v === "true"),
   BUILD_WORKER_SHARED_SECRET: z.preprocess(value => value === "" ? undefined : value, z.string().min(32).optional()),
+  S3_ENDPOINT: z.preprocess(value => value === "" ? undefined : value, z.string().url().optional()),
+  S3_REGION: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
+  S3_BUCKET: z.preprocess(value => value === "" ? undefined : value, z.string().regex(/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/).optional()),
+  S3_ACCESS_KEY_ID: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
+  S3_SECRET_ACCESS_KEY: z.preprocess(value => value === "" ? undefined : value, z.string().min(32).optional()),
   GITHUB_TOKEN: z.string().optional()
 });
 
@@ -24,4 +29,12 @@ if (config.NODE_ENV === "production" && !config.COOKIE_SECURE) {
 }
 if (config.ENABLE_ANDROID_BUILDS && !config.BUILD_WORKER_SHARED_SECRET) {
   throw new Error("BUILD_WORKER_SHARED_SECRET (minimum 32 characters) is required when ENABLE_ANDROID_BUILDS=true");
+}
+
+const storageValues = [config.S3_ENDPOINT, config.S3_REGION, config.S3_BUCKET, config.S3_ACCESS_KEY_ID, config.S3_SECRET_ACCESS_KEY];
+if (storageValues.some(Boolean) && !storageValues.every(Boolean)) {
+  throw new Error("S3_ENDPOINT, S3_REGION, S3_BUCKET, S3_ACCESS_KEY_ID, and S3_SECRET_ACCESS_KEY must be configured together");
+}
+if (config.ENABLE_ANDROID_BUILDS && !storageValues.every(Boolean)) {
+  throw new Error("Private S3-compatible artifact storage is required when ENABLE_ANDROID_BUILDS=true");
 }
