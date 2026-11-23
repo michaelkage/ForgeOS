@@ -16,6 +16,8 @@ test("device source schema rejects non-GitHub hosts and traversal paths", () => 
   assert.equal(deviceSourceSchema.safeParse(validDeviceSource).success, true);
   assert.equal(deviceSourceSchema.safeParse({ ...validDeviceSource, repositoryUrl: "https://evil.example/owner/repo" }).success, false);
   assert.equal(deviceSourceSchema.safeParse({ ...validDeviceSource, sourcePath: "../secrets" }).success, false);
+  assert.equal(deviceSourceSchema.safeParse({ ...validDeviceSource, branchName: "../../main" }).success, false);
+  assert.equal(deviceSourceSchema.safeParse({ ...validDeviceSource, branchName: "release/lineage-24.0" }).success, true);
   assert.equal(deviceSourceSchema.safeParse({ ...validDeviceSource, repositoryUrl: "https://user:pass@github.com/owner/repo" }).success, false);
 });
 
