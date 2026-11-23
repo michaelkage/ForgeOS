@@ -35,7 +35,7 @@ From this directory:
     npm test
     npm run dev
 
-The API listens on http://127.0.0.1:4100 by default. Set MANIFEST_ROOT to the absolute repository root if the service is not launched from this directory. /healthz is a liveness check and /readyz checks the database.
+The API listens on http://127.0.0.1:4100 by default. MANIFEST_ROOT defaults to the repository root relative to the application module; override it with an absolute path when the manifest checkout is elsewhere. /healthz is a liveness check and /readyz checks the database.
 
 ## First administrator
 
@@ -71,6 +71,6 @@ Mutating authenticated requests require the CSRF token returned by login/registe
 
 ## Production gaps
 
-Before public deployment, add email verification and password reset, MFA/passkeys, session revocation UI, audit logs, stricter integration tests, and observability. Add reviewed device profile import/sync and signed provenance before enabling public device support. Root options are recorded for configuration continuity but are not injected. Build submission remains blocked until an isolated worker, quotas, artifact storage, signing, and a threat-reviewed build pipeline are deployed.
+Before public deployment, add email verification and password reset, MFA/passkeys, session revocation UI, audit logs, periodic upstream source revalidation, signed provenance, and observability. The current GitHub resolver verifies public repository structure and records a commit SHA; it does not establish buildability, maintainer authority, device safety, or licensing rights. Root options are recorded for configuration continuity but are not injected. Build submission remains blocked until an isolated worker, quotas, artifact storage, signing, and a threat-reviewed build pipeline are deployed.
 
 Never put signing keys, Git credentials, vendor blobs, or build secrets in this service or in the browser.
