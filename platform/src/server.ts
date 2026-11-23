@@ -142,9 +142,11 @@ app.post("/api/admin/devices", async (request,reply) => {
   if (!requireAdmin(request,reply) || !requireCsrf(request,reply)) return;
   const parsed = parse(deviceSchema,request.body);
   if (!parsed.success) return fail(reply,400,"invalid_device");
+  const d=parsed.data;
+  if (d.enabled) return fail(reply,422,"verify_device_source_before_activation");
   const client = await pool.connect();
   try {
-    await client.query("BEGIN"); const d=parsed.data;
+    await client.query("BEGIN");
     const inserted=await client.query(
       "INSERT INTO forgeos_devices(codename,manufacturer,model,chipset,architecture,enabled,notes) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id",
       [d.codename,d.manufacturer,d.model,d.chipset??null,d.architecture,d.enabled,d.notes??null]
@@ -166,9 +168,14 @@ app.put("/api/admin/devices/:id", async (request,reply) => {
   if (!requireAdmin(request,reply) || !requireCsrf(request,reply)) return;
   const id=z.string().uuid().safeParse((request.params as {id?:string}).id), parsed=parse(deviceSchema,request.body);
   if (!id.success || !parsed.success) return fail(reply,400,"invalid_device");
+  const d=parsed.data;
+  if (d.enabled) {
+    const verified=await query("SELECT 1 FROM forgeos_device_sources WHERE device_id=$1 AND source_kind='device' AND verification_status='verified' LIMIT 1",[id.data]);
+    if (!verified.rowCount) return fail(reply,422,"verify_device_source_before_activation");
+  }
   const client=await pool.connect();
   try {
-    await client.query("BEGIN"); const d=parsed.data;
+    await client.query("BEGIN");
     const updated=await client.query(
       "UPDATE forgeos_devices SET codename=$2,manufacturer=$3,model=$4,chipset=$5,architecture=$6,enabled=$7,notes=$8 WHERE id=$1 RETURNING id",
       [id.data,d.codename,d.manufacturer,d.model,d.chipset??null,d.architecture,d.enabled,d.notes??null]
@@ -186,6 +193,19 @@ app.put("/api/admin/devices/:id", async (request,reply) => {
     request.log.error(error); return fail(reply,500,"device_update_failed");
   } finally { client.release(); }
 });
+
+app.post("/api/admin/devices/:id/activate", async (request,reply) => {
+  if (!requireAdmin(request,reply) || !requireCsrf(request,reply)) return;
+  const id=z.string().uuid().safeParse((request.params as {id?:string}).id);
+  if (!id.success) return fail(reply,400,"invalid_device_id");
+  const result=await query(
+    "UPDATE forgeos_devices d SET enabled=true WHERE d.id=$1 AND EXISTS (SELECT 1 FROM forgeos_device_sources s WHERE s.device_id=d.id AND s.source_kind='device' AND s.verification_status='verified') AND EXISTS (SELECT 1 FROM forgeos_device_rom_bases b WHERE b.device_id=d.id AND b.enabled=true) RETURNING d.id",
+    [id.data]
+  );
+  if (!result.rowCount) return fail(reply,422,"verified_device_source_and_rom_base_required");
+  return {ok:true,enabled:true};
+});
+
 app.delete("/api/admin/devices/:id", async (request,reply) => {
   if (!requireAdmin(request,reply) || !requireCsrf(request,reply)) return;
   const id=z.string().uuid().safeParse((request.params as {id?:string}).id);
