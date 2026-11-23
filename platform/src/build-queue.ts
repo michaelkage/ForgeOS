@@ -7,7 +7,9 @@ import { requireCsrf, requireUser } from "./security.js";
 
 const workerClaimSchema = z.object({
   workerId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/),
-  leaseSeconds: z.number().int().min(30).max(900).default(180)
+  leaseSeconds: z.number().int().min(30).max(900).default(180),
+  architectures: z.array(z.enum(["arm64", "arm", "x86_64"])).min(1).max(3),
+  romBases: z.array(z.enum(["lineage", "crdroid"])).min(1).max(2)
 }).strict();
 const leaseSchema = z.object({
   workerId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/),
@@ -26,6 +28,7 @@ export const buildArtifactSchema = z.object({
     contentType: z.literal("application/zip")
 }).strict();
 const completionSchema = leaseSchema.extend({ artifact: buildArtifactSchema }).strict();
+const MAX_ACTIVE_BUILD_JOBS_PER_USER = 2;
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value === "string" || typeof value === "boolean" || typeof value === "number") {
@@ -96,6 +99,15 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
       if (!row || (row.validation_report as { valid?: boolean } | null)?.valid !== true) {
         await client.query("ROLLBACK");
         return reply.code(422).send({ error: "configuration_must_be_validated" });
+      }
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [request.user!.id]);
+      const active = await client.query(
+        "SELECT count(*)::int AS count FROM forgeos_build_jobs WHERE user_id=$1 AND status IN ('pending','leased') AND configuration_id<>$2",
+        [request.user!.id, id.data]
+      );
+      if (active.rows[0]!.count >= MAX_ACTIVE_BUILD_JOBS_PER_USER) {
+        await client.query("ROLLBACK");
+        return reply.code(429).send({ error: "active_build_job_limit_reached", limit: MAX_ACTIVE_BUILD_JOBS_PER_USER });
       }
       const snapshot = {
         schemaVersion: 1,
@@ -201,6 +213,8 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
       const claimed = await client.query(
         `WITH candidate AS (
           SELECT id FROM forgeos_build_jobs WHERE status='pending' AND attempts < max_attempts
+            AND snapshot->'device'->>'architecture'=ANY($4::text[])
+            AND snapshot->'configuration'->>'romBase'=ANY($5::text[])
           ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
         )
         UPDATE forgeos_build_jobs j SET status='leased',worker_id=$1,lease_token=$2,
@@ -208,7 +222,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
           attempts=attempts+1,started_at=COALESCE(started_at,now()),updated_at=now()
         FROM candidate WHERE j.id=candidate.id
         RETURNING j.id,j.snapshot,j.snapshot_sha256,j.attempts,j.max_attempts,j.lease_token,j.lease_expires_at`,
-        [parsed.data.workerId, randomUUID(), parsed.data.leaseSeconds]
+        [parsed.data.workerId, randomUUID(), parsed.data.leaseSeconds, parsed.data.architectures, parsed.data.romBases]
       );
       if (claimed.rows[0] && !verifyBuildSnapshot(claimed.rows[0].snapshot, claimed.rows[0].snapshot_sha256)) {
         throw new Error("Stored build snapshot fingerprint mismatch");
