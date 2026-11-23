@@ -49,7 +49,7 @@ async function loadBuildStatus(){
 }
 async function loadBuildJobs(){
  const data=await api("/api/build-jobs");
- $("#buildJobs").innerHTML=data.jobs.length?data.jobs.map(job=>'<article class="card"><div class="actions"><strong>'+esc(job.configuration_name||job.id)+'</strong><span class="tag">'+esc(job.status)+'</span></div><p>'+esc(job.device_codename||"Device")+' · '+esc(job.rom_base||"ROM")+' · Job '+esc(job.id)+'</p><p>Attempts: '+esc(job.attempts)+' / '+esc(job.max_attempts)+' · Created: '+esc(new Date(job.created_at).toLocaleString())+'</p>'+(job.error_message?'<p class="status bad">'+esc(job.error_code)+': '+esc(job.error_message)+'</p>':'')+(job.artifact_sha256?'<p class="muted">Artifact SHA-256: '+esc(job.artifact_sha256)+' · '+esc(job.artifact_size_bytes)+' bytes</p>':'')+'<p class="muted">Input snapshot SHA-256: '+esc(job.snapshot_sha256)+'</p>'+(['pending','leased'].includes(job.status)?'<button class="secondary" data-cancel-job="'+job.id+'">Cancel job</button>':'')+'</article>').join(""):"No build jobs yet.";
+ $("#buildJobs").innerHTML=data.jobs.length?data.jobs.map(job=>'<article class="card"><div class="actions"><strong>'+esc(job.configuration_name||job.id)+'</strong><span class="tag">'+esc(job.status)+'</span></div><p>'+esc(job.device_codename||"Device")+' · '+esc(job.rom_base||"ROM")+' · Job '+esc(job.id)+'</p><p>Attempts: '+esc(job.attempts)+' / '+esc(job.max_attempts)+' · Created: '+esc(new Date(job.created_at).toLocaleString())+'</p>'+(job.error_message?'<p class="status bad">'+esc(job.error_code)+': '+esc(job.error_message)+'</p>':'')+(job.artifact_sha256?'<p class="muted">Verified artifact SHA-256: '+esc(job.artifact_sha256)+' · '+esc(job.artifact_size_bytes)+' bytes</p><button class="secondary" data-download-job="'+job.id+'">Download verified ROM</button>':'')+'<p class="muted">Input snapshot SHA-256: '+esc(job.snapshot_sha256)+'</p>'+(['pending','leased'].includes(job.status)?'<button class="secondary" data-cancel-job="'+job.id+'">Cancel job</button>':'')+'</article>').join(""):"No build jobs yet.";
 }
 async function enter(data){
  csrfToken=data.csrfToken;showWorkspace(data.user);await loadDevices();await loadBuildStatus();await loadConfigs();await loadBuildJobs();notice("Signed in. Choose a supported device and save a configuration.","good");
@@ -77,6 +77,12 @@ $("#configs").addEventListener("click",async e=>{
 $("#refreshJobs").addEventListener("click",async()=>{try{await loadBuildStatus();await loadBuildJobs();await loadConfigs();notice("Build job list refreshed.","good");}catch(err){notice(err.message,"bad");}});
 $("#buildJobs").addEventListener("click",async e=>{
  const target=e.target;if(!(target instanceof HTMLElement))return;
+ const downloadId=target.dataset.downloadJob;
+ if(downloadId){
+  try{const result=await api("/api/build-jobs/"+downloadId+"/download",{method:"POST",body:"{}"});window.location.assign(result.url);}
+  catch(err){notice(err.message,"bad");}
+  return;
+ }
  const id=target.dataset.cancelJob;if(!id)return;
  try{await api("/api/build-jobs/"+id+"/cancel",{method:"POST",body:"{}"});await loadBuildJobs();await loadConfigs();notice("Build job cancelled.","good");}catch(err){notice(err.message,"bad");}
 });
