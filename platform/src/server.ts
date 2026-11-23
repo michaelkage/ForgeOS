@@ -108,8 +108,8 @@ app.post("/api/admin/devices/:id/sources", async (request,reply) => {
   const id=z.string().uuid().safeParse((request.params as {id?:string}).id);
   const parsed=deviceSourceSchema.safeParse(request.body);
   if (!id.success || !parsed.success) return fail(reply,400,"invalid_device_source");
-  const exists=await query("SELECT id FROM forgeos_devices WHERE id=$1",[id.data]);
-  if (!exists.rowCount) return fail(reply,404,"device_not_found");
+  const exists=await query("SELECT d.id FROM forgeos_devices d JOIN forgeos_device_rom_bases b ON b.device_id=d.id WHERE d.id=$1 AND b.rom_base=$2 AND b.enabled=true",[id.data,parsed.data.romBase]);
+  if (!exists.rowCount) return fail(reply,404,"device_or_enabled_rom_base_not_found");
   const source=parsed.data;
   const result=await query(
     "INSERT INTO forgeos_device_sources(device_id,source_kind,rom_base,repository_url,branch_name,source_path) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(device_id,source_kind,rom_base,repository_url,branch_name,source_path) DO UPDATE SET verification_status='pending',verified_commit_sha=NULL,verified_files='[]'::jsonb,verification_error=NULL,last_checked_at=NULL,updated_at=now() RETURNING id",
@@ -174,7 +174,9 @@ app.put("/api/admin/devices/:id", async (request,reply) => {
   if (!id.success || !parsed.success) return fail(reply,400,"invalid_device");
   const d=parsed.data;
   if (d.enabled) {
-    const missing=await query("SELECT 1 FROM forgeos_device_rom_bases b WHERE b.device_id=$1 AND b.enabled=true AND NOT EXISTS (SELECT 1 FROM forgeos_device_sources s WHERE s.device_id=b.device_id AND s.source_kind='device' AND s.rom_base=b.rom_base AND s.verification_status='verified') LIMIT 1",[id.data]);
+    const enabledBases=d.romBases.filter(base=>base.enabled).map(base=>base.base);
+    if (!enabledBases.length) return fail(reply,422,"at_least_one_enabled_rom_base_required");
+    const missing=await query("SELECT requested.rom_base FROM unnest($2::forgeos_rom_base[]) AS requested(rom_base) WHERE NOT EXISTS (SELECT 1 FROM forgeos_device_sources s WHERE s.device_id=$1 AND s.source_kind='device' AND s.rom_base=requested.rom_base AND s.verification_status='verified') LIMIT 1",[id.data,enabledBases]);
     if (missing.rowCount) return fail(reply,422,"verify_all_device_tree_sources_before_activation");
   }
   const client=await pool.connect();
