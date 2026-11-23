@@ -11,6 +11,7 @@ import { pool, query } from "./db.js";
 import { configSchema, deviceSchema, loginSchema, registerSchema } from "./schemas.js";
 import { createSession, destroySession, hashPassword, loadSession, requireAdmin, requireCsrf, requireUser, verifyPassword } from "./security.js";
 import { validateRepositoryManifest } from "./manifest.js";
+import { deviceSourceSchema, verifyDeviceSource } from "./device-resolver.js";
 
 const app = Fastify({ logger: true, trustProxy: config.NODE_ENV === "production", bodyLimit: 256 * 1024 });
 await app.register(helmet, { contentSecurityPolicy: false });
@@ -72,7 +73,8 @@ app.get("/api/devices", async () => {
   const result = await query(
     `SELECT d.id,d.codename,d.manufacturer,d.model,d.chipset,d.architecture,
       COALESCE(jsonb_agg(jsonb_build_object('base',b.rom_base,'manifestPath',b.manifest_path,'branchName',b.branch_name))
-      FILTER (WHERE b.enabled), '[]'::jsonb) AS rom_bases
+      FILTER (WHERE b.enabled), '[]'::jsonb) AS rom_bases,
+      COALESCE((SELECT bool_and(s.verification_status='verified') FROM forgeos_device_sources s WHERE s.device_id=d.id AND s.source_kind='device'),false) AS device_tree_verified
       FROM forgeos_devices d LEFT JOIN forgeos_device_rom_bases b ON b.device_id=d.id AND b.enabled=true
       WHERE d.enabled=true GROUP BY d.id ORDER BY d.manufacturer,d.model`
   );
@@ -90,6 +92,52 @@ app.get("/api/admin/devices", async (request,reply) => {
   );
   return {devices:result.rows};
 });
+
+app.get("/api/admin/devices/:id/sources", async (request,reply) => {
+  if (!requireAdmin(request,reply)) return;
+  const id=z.string().uuid().safeParse((request.params as {id?:string}).id);
+  if (!id.success) return fail(reply,400,"invalid_device_id");
+  const result=await query(
+    "SELECT id,source_kind,repository_url,branch_name,source_path,verification_status,verified_commit_sha,verified_files,verification_error,last_checked_at FROM forgeos_device_sources WHERE device_id=$1 ORDER BY source_kind,created_at",
+    [id.data]
+  );
+  return {sources:result.rows};
+});
+app.post("/api/admin/devices/:id/sources", async (request,reply) => {
+  if (!requireAdmin(request,reply) || !requireCsrf(request,reply)) return;
+  const id=z.string().uuid().safeParse((request.params as {id?:string}).id);
+  const parsed=deviceSourceSchema.safeParse(request.body);
+  if (!id.success || !parsed.success) return fail(reply,400,"invalid_device_source");
+  const exists=await query("SELECT id FROM forgeos_devices WHERE id=$1",[id.data]);
+  if (!exists.rowCount) return fail(reply,404,"device_not_found");
+  const source=parsed.data;
+  const result=await query(
+    "INSERT INTO forgeos_device_sources(device_id,source_kind,repository_url,branch_name,source_path) VALUES($1,$2,$3,$4,$5) ON CONFLICT(device_id,source_kind,repository_url,branch_name,source_path) DO UPDATE SET verification_status='pending',verified_commit_sha=NULL,verified_files='[]'::jsonb,verification_error=NULL,last_checked_at=NULL,updated_at=now() RETURNING id",
+    [id.data,source.sourceKind,source.repositoryUrl.replace(/\\/$/,""),source.branchName,source.sourcePath]
+  );
+  return reply.code(201).send({sourceId:result.rows[0]!.id,status:"pending"});
+});
+app.post("/api/admin/devices/:id/sources/:sourceId/verify", async (request,reply) => {
+  if (!requireAdmin(request,reply) || !requireCsrf(request,reply)) return;
+  const params=request.params as {id?:string;sourceId?:string};
+  const id=z.string().uuid().safeParse(params.id), sourceId=z.string().uuid().safeParse(params.sourceId);
+  if (!id.success || !sourceId.success) return fail(reply,400,"invalid_source_id");
+  const selected=await query(
+    "SELECT source_kind,repository_url,branch_name,source_path FROM forgeos_device_sources WHERE id=$1 AND device_id=$2",
+    [sourceId.data,id.data]
+  );
+  const row=selected.rows[0] as {source_kind:"device"|"kernel"|"vendor";repository_url:string;branch_name:string;source_path:string}|undefined;
+  if (!row) return fail(reply,404,"device_source_not_found");
+  const verified=await verifyDeviceSource({
+    sourceKind:row.source_kind,repositoryUrl:row.repository_url,branchName:row.branch_name,sourcePath:row.source_path
+  },config.GITHUB_TOKEN);
+  await query(
+    "UPDATE forgeos_device_sources SET verification_status=$3,verified_commit_sha=$4,verified_files=$5,verification_error=$6,last_checked_at=now(),updated_at=now() WHERE id=$1 AND device_id=$2",
+    [sourceId.data,id.data,verified.status,verified.commitSha,JSON.stringify(verified.files),verified.error]
+  );
+  return {sourceId:sourceId.data,...verified};
+});
+
 app.post("/api/admin/devices", async (request,reply) => {
   if (!requireAdmin(request,reply) || !requireCsrf(request,reply)) return;
   const parsed = parse(deviceSchema,request.body);
