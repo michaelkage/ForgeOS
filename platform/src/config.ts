@@ -10,7 +10,8 @@ const envSchema = z.object({
   SESSION_COOKIE_NAME: z.string().default("forgeos_session"),
   SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(168),
   COOKIE_SECURE: z.string().default("false").transform(v => v === "true"),
-  ENABLE_ANDROID_BUILDS: z.string().default("false").transform(v => v === "true")
+  ENABLE_ANDROID_BUILDS: z.string().default("false").transform(v => v === "true"),
+  GITHUB_TOKEN: z.string().optional()
 });
 
 export const config = envSchema.parse(process.env);
