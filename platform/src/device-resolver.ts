@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+const validGitRef = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(value) && !value.includes("..") && !value.includes("//") && !value.includes("@{") && !value.endsWith("/") && !value.endsWith(".") && !value.split("/").some(part => part.endsWith(".lock"));
+
 export const deviceSourceSchema = z.object({
   sourceKind: z.enum(["device", "kernel", "vendor"]),
   repositoryUrl: z.string().url().max(300).refine(value => {
@@ -23,7 +25,6 @@ type GithubRepo = { archived?: boolean; disabled?: boolean };
 type GithubBranch = { commit?: { sha?: string } };
 type GithubContent = { name?: string; type?: string }[] | { message?: string };
 const API = "https://api.github.com";
-const validGitRef = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(value) && !value.includes("..") && !value.includes("//") && !value.includes("@{") && !value.endsWith("/") && !value.endsWith(".") && !value.split("/").some(part => part.endsWith(".lock"));
 
 async function githubGet<T>(path: string, token?: string): Promise<T> {
   const headers: Record<string, string> = {
