@@ -4,6 +4,7 @@ const validGitRef = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test
 
 export const deviceSourceSchema = z.object({
   sourceKind: z.enum(["device", "kernel", "vendor"]),
+  romBase: z.enum(["lineage", "crdroid"]).nullable().optional(),
   repositoryUrl: z.string().url().max(300).refine(value => {
     try {
       const url = new URL(value);
@@ -17,7 +18,9 @@ export const deviceSourceSchema = z.object({
     value === "" || (!value.startsWith("/") && !value.split("/").includes("..") && !/[\u0000-\u001f]/.test(value)),
     "Source path must be a safe repository-relative path"
   ).default("")
-}).strict();
+}).strict().superRefine((source, ctx) => {
+  if (source.sourceKind === "device" && !source.romBase) ctx.addIssue({ code: "custom", message: "Device-tree sources must be associated with a ROM base", path: ["romBase"] });
+});
 
 export type DeviceSourceInput = z.infer<typeof deviceSourceSchema>;
 export type VerificationResult = { status: "verified" | "failed"; commitSha: string | null; files: string[]; error: string | null };
