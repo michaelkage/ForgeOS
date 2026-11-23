@@ -1,6 +1,6 @@
 # ForgeOS build execution security design
 
-Status: mixed implementation and architecture contract. The API now implements S3-compatible SigV4 presigned upload/download URLs, lease-bound upload intents, conditional write-once uploads, server-side HEAD checks, streamed SHA-256 verification, and owner-authorized downloads. This does not mean a storage provider is configured or that build execution is safe to enable. Disposable Android VM isolation, cgroup resource enforcement, isolated ROM signing, and production observability are not implemented. A reusable process-group supervisor primitive is implemented and tested, but is not yet wired into a production worker runtime. Keep `ENABLE_ANDROID_BUILDS=false` until every launch gate below is implemented and tested.
+Status: mixed implementation and architecture contract. The API now implements S3-compatible SigV4 presigned upload/download URLs, lease-bound upload intents, conditional write-once uploads, server-side HEAD checks, streamed SHA-256 verification, and owner-authorized downloads. This does not mean a storage provider is configured or that build execution is safe to enable. Disposable Android VM isolation, cgroup resource enforcement, isolated ROM signing, host-enforced resource accounting, centralized logs, alerting, and production observability are not implemented. An append-only PostgreSQL job-event ledger records selected queue and artifact lifecycle transitions. A reusable process-group supervisor primitive is implemented and tested, but is not yet wired into a production worker runtime. Keep `ENABLE_ANDROID_BUILDS=false` until every launch gate below is implemented and tested.
 
 ## Trust boundaries
 
@@ -83,7 +83,7 @@ Never expose signing keys to arbitrary build scripts, even temporarily.
 
 ### 6. Logs, accounting, and monitoring
 
-Persist structured, append-only job events with server timestamps, job/attempt/worker identifiers, event type, and bounded sanitized payload. Keep build stdout/stderr as attempt-scoped log objects with size limits and short-lived owner-authorized access. Redact cookies, bearer tokens, signed URLs, credentials, and secret-like values before persistence.
+Implemented: selected queue and artifact lifecycle events are persisted in an append-only PostgreSQL table with server timestamps, job/attempt/worker identifiers, and bounded JSON payloads. Remaining: expand transition coverage and add attempt-scoped stdout/stderr log objects with size limits and short-lived owner-authorized access. Keep build stdout/stderr as attempt-scoped log objects with size limits and short-lived owner-authorized access. Redact cookies, bearer tokens, signed URLs, credentials, and secret-like values before persistence.
 
 Record per-attempt CPU time, peak memory, disk peak, elapsed time, bytes downloaded/uploaded, exit code, worker image digest, and termination reason. Enforce quotas using measured resource consumption, not worker-reported estimates alone.
 
