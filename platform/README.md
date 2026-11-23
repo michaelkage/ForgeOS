@@ -169,3 +169,7 @@ Completion is accepted only after the worker has uploaded a ZIP artifact to priv
 ```
 
 The API stores artifact metadata only. It does not accept file uploads, issue signed download URLs, verify the object exists, or sign ROM images. Those operations belong in the isolated worker and private artifact-storage service.
+
+## Build infrastructure security contract
+
+The required production architecture, trust boundaries, storage verification rules, worker isolation controls, cancellation semantics, signing boundary, observability requirements, and launch gates are documented in [BUILD_INFRASTRUCTURE.md](./BUILD_INFRASTRUCTURE.md). This is an implementation contract, not a claim that these services are deployed. Keep Android build submission disabled until every launch gate is satisfied.
