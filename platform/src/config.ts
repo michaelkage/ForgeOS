@@ -14,10 +14,14 @@ const envSchema = z.object({
   SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(168),
   COOKIE_SECURE: z.string().default("false").transform(v => v === "true"),
   ENABLE_ANDROID_BUILDS: z.string().default("false").transform(v => v === "true"),
+  BUILD_WORKER_SHARED_SECRET: z.string().min(32).optional(),
   GITHUB_TOKEN: z.string().optional()
 });
 
 export const config = envSchema.parse(process.env);
 if (config.NODE_ENV === "production" && !config.COOKIE_SECURE) {
   throw new Error("COOKIE_SECURE must be true in production");
+}
+if (config.ENABLE_ANDROID_BUILDS && !config.BUILD_WORKER_SHARED_SECRET) {
+  throw new Error("BUILD_WORKER_SHARED_SECRET (minimum 32 characters) is required when ENABLE_ANDROID_BUILDS=true");
 }
