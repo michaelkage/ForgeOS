@@ -14,7 +14,21 @@ import { validateRepositoryManifest } from "./manifest.js";
 import { deviceSourceSchema, verifyDeviceSource } from "./device-resolver.js";
 
 const app = Fastify({ logger: true, trustProxy: config.NODE_ENV === "production", bodyLimit: 256 * 1024 });
-await app.register(helmet, { contentSecurityPolicy: false });
+await app.register(helmet, {
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'"],
+      imgSrc: ["'self'", "data:"],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      frameAncestors: ["'none'"]
+    }
+  }
+});
 await app.register(cookie);
 await app.register(cors, { origin: config.WEB_ORIGIN, credentials: true, methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"] });
 await app.register(fastifyStatic, { root: resolve(process.cwd(), "web"), index: ["index.html"] });
