@@ -74,7 +74,7 @@ app.get("/api/devices", async () => {
     `SELECT d.id,d.codename,d.manufacturer,d.model,d.chipset,d.architecture,
       COALESCE(jsonb_agg(jsonb_build_object('base',b.rom_base,'manifestPath',b.manifest_path,'branchName',b.branch_name))
       FILTER (WHERE b.enabled), '[]'::jsonb) AS rom_bases,
-      COALESCE((SELECT bool_and(s.verification_status='verified') FROM forgeos_device_sources s WHERE s.device_id=d.id AND s.source_kind='device'),false) AS device_tree_verified
+      (EXISTS (SELECT 1 FROM forgeos_device_rom_bases rb WHERE rb.device_id=d.id AND rb.enabled=true) AND NOT EXISTS (SELECT 1 FROM forgeos_device_rom_bases rb WHERE rb.device_id=d.id AND rb.enabled=true AND NOT EXISTS (SELECT 1 FROM forgeos_device_sources s WHERE s.device_id=d.id AND s.source_kind='device' AND s.rom_base=rb.rom_base AND s.verification_status='verified'))) AS device_tree_verified
       FROM forgeos_devices d LEFT JOIN forgeos_device_rom_bases b ON b.device_id=d.id AND b.enabled=true
       WHERE d.enabled=true GROUP BY d.id ORDER BY d.manufacturer,d.model`
   );
@@ -98,7 +98,7 @@ app.get("/api/admin/devices/:id/sources", async (request,reply) => {
   const id=z.string().uuid().safeParse((request.params as {id?:string}).id);
   if (!id.success) return fail(reply,400,"invalid_device_id");
   const result=await query(
-    "SELECT id,source_kind,repository_url,branch_name,source_path,verification_status,verified_commit_sha,verified_files,verification_error,last_checked_at FROM forgeos_device_sources WHERE device_id=$1 ORDER BY source_kind,created_at",
+    "SELECT id,source_kind,rom_base,repository_url,branch_name,source_path,verification_status,verified_commit_sha,verified_files,verification_error,last_checked_at FROM forgeos_device_sources WHERE device_id=$1 ORDER BY source_kind,rom_base,created_at",
     [id.data]
   );
   return {sources:result.rows};
@@ -112,8 +112,8 @@ app.post("/api/admin/devices/:id/sources", async (request,reply) => {
   if (!exists.rowCount) return fail(reply,404,"device_not_found");
   const source=parsed.data;
   const result=await query(
-    "INSERT INTO forgeos_device_sources(device_id,source_kind,repository_url,branch_name,source_path) VALUES($1,$2,$3,$4,$5) ON CONFLICT(device_id,source_kind,repository_url,branch_name,source_path) DO UPDATE SET verification_status='pending',verified_commit_sha=NULL,verified_files='[]'::jsonb,verification_error=NULL,last_checked_at=NULL,updated_at=now() RETURNING id",
-    [id.data,source.sourceKind,source.repositoryUrl.replace(/\/+$/,""),source.branchName,source.sourcePath]
+    "INSERT INTO forgeos_device_sources(device_id,source_kind,rom_base,repository_url,branch_name,source_path) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(device_id,source_kind,rom_base,repository_url,branch_name,source_path) DO UPDATE SET verification_status='pending',verified_commit_sha=NULL,verified_files='[]'::jsonb,verification_error=NULL,last_checked_at=NULL,updated_at=now() RETURNING id",
+    [id.data,source.sourceKind,source.romBase??null,source.repositoryUrl.replace(/\/+$/,""),source.branchName,source.sourcePath]
   );
   await query("UPDATE forgeos_devices SET enabled=false WHERE id=$1",[id.data]);
   return reply.code(201).send({sourceId:result.rows[0]!.id,status:"pending"});
@@ -124,13 +124,13 @@ app.post("/api/admin/devices/:id/sources/:sourceId/verify", async (request,reply
   const id=z.string().uuid().safeParse(params.id), sourceId=z.string().uuid().safeParse(params.sourceId);
   if (!id.success || !sourceId.success) return fail(reply,400,"invalid_source_id");
   const selected=await query(
-    "SELECT source_kind,repository_url,branch_name,source_path FROM forgeos_device_sources WHERE id=$1 AND device_id=$2",
+    "SELECT source_kind,rom_base,repository_url,branch_name,source_path FROM forgeos_device_sources WHERE id=$1 AND device_id=$2",
     [sourceId.data,id.data]
   );
-  const row=selected.rows[0] as {source_kind:"device"|"kernel"|"vendor";repository_url:string;branch_name:string;source_path:string}|undefined;
+  const row=selected.rows[0] as {source_kind:"device"|"kernel"|"vendor";rom_base:"lineage"|"crdroid"|null;repository_url:string;branch_name:string;source_path:string}|undefined;
   if (!row) return fail(reply,404,"device_source_not_found");
   const verified=await verifyDeviceSource({
-    sourceKind:row.source_kind,repositoryUrl:row.repository_url,branchName:row.branch_name,sourcePath:row.source_path
+    sourceKind:row.source_kind,romBase:row.rom_base??undefined,repositoryUrl:row.repository_url,branchName:row.branch_name,sourcePath:row.source_path
   },config.GITHUB_TOKEN);
   await query(
     "UPDATE forgeos_device_sources SET verification_status=$3,verified_commit_sha=$4,verified_files=$5,verification_error=$6,last_checked_at=now(),updated_at=now() WHERE id=$1 AND device_id=$2",
@@ -174,8 +174,8 @@ app.put("/api/admin/devices/:id", async (request,reply) => {
   if (!id.success || !parsed.success) return fail(reply,400,"invalid_device");
   const d=parsed.data;
   if (d.enabled) {
-    const verified=await query("SELECT 1 FROM forgeos_device_sources WHERE device_id=$1 AND source_kind='device' AND verification_status='verified' LIMIT 1",[id.data]);
-    if (!verified.rowCount) return fail(reply,422,"verify_device_source_before_activation");
+    const missing=await query("SELECT 1 FROM forgeos_device_rom_bases b WHERE b.device_id=$1 AND b.enabled=true AND NOT EXISTS (SELECT 1 FROM forgeos_device_sources s WHERE s.device_id=b.device_id AND s.source_kind='device' AND s.rom_base=b.rom_base AND s.verification_status='verified') LIMIT 1",[id.data]);
+    if (missing.rowCount) return fail(reply,422,"verify_all_device_tree_sources_before_activation");
   }
   const client=await pool.connect();
   try {
@@ -203,7 +203,7 @@ app.post("/api/admin/devices/:id/activate", async (request,reply) => {
   const id=z.string().uuid().safeParse((request.params as {id?:string}).id);
   if (!id.success) return fail(reply,400,"invalid_device_id");
   const result=await query(
-    "UPDATE forgeos_devices d SET enabled=true WHERE d.id=$1 AND EXISTS (SELECT 1 FROM forgeos_device_sources s WHERE s.device_id=d.id AND s.source_kind='device' AND s.verification_status='verified') AND NOT EXISTS (SELECT 1 FROM forgeos_device_sources s WHERE s.device_id=d.id AND s.source_kind='device' AND s.verification_status<>'verified') AND EXISTS (SELECT 1 FROM forgeos_device_rom_bases b WHERE b.device_id=d.id AND b.enabled=true) RETURNING d.id",
+    "UPDATE forgeos_devices d SET enabled=true WHERE d.id=$1 AND EXISTS (SELECT 1 FROM forgeos_device_rom_bases b WHERE b.device_id=d.id AND b.enabled=true) AND NOT EXISTS (SELECT 1 FROM forgeos_device_rom_bases b WHERE b.device_id=d.id AND b.enabled=true AND NOT EXISTS (SELECT 1 FROM forgeos_device_sources s WHERE s.device_id=d.id AND s.source_kind='device' AND s.rom_base=b.rom_base AND s.verification_status='verified')) RETURNING d.id",
     [id.data]
   );
   if (!result.rowCount) return fail(reply,422,"verified_device_source_and_rom_base_required");
