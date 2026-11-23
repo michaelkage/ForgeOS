@@ -10,7 +10,7 @@ export const deviceSourceSchema = z.object({
         /^\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?\/?$/.test(url.pathname);
     } catch { return false; }
   }, "Only public GitHub repository URLs are supported"),
-  branchName: z.string().regex(/^[A-Za-z0-9._/-]{1,100}$/),
+  branchName: z.string().refine(validGitRef, "Invalid Git branch or tag name"),
   sourcePath: z.string().max(240).refine(value =>
     value === "" || (!value.startsWith("/") && !value.split("/").includes("..") && !/[\u0000-\u001f]/.test(value)),
     "Source path must be a safe repository-relative path"
@@ -23,6 +23,7 @@ type GithubRepo = { archived?: boolean; disabled?: boolean };
 type GithubBranch = { commit?: { sha?: string } };
 type GithubContent = { name?: string; type?: string }[] | { message?: string };
 const API = "https://api.github.com";
+const validGitRef = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$/.test(value) && !value.includes("..") && !value.includes("//") && !value.includes("@{") && !value.endsWith("/") && !value.endsWith(".") && !value.split("/").some(part => part.endsWith(".lock"));
 
 async function githubGet<T>(path: string, token?: string): Promise<T> {
   const headers: Record<string, string> = {
