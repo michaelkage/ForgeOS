@@ -5,7 +5,7 @@ const sha256 = (value: string | Buffer) => createHash("sha256").update(value).di
 const hmac = (key: Buffer | string, value: string) => createHmac("sha256", key).update(value).digest();
 const encode = (value: string) => encodeURIComponent(value).replace(/[!'()*]/g, c => "%" + c.charCodeAt(0).toString(16).toUpperCase());
 const canonicalQuery = (values: Record<string, string>) => Object.entries(values)
-  .sort(([a], [b]) => a.localeCompare(b))
+  .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
   .map(([key, value]) => encode(key) + "=" + encode(value)).join("&");
 
 function storageSettings() {
