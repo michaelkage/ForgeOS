@@ -24,7 +24,6 @@ const failureSchema = leaseSchema.extend({
   message: z.string().trim().min(1).max(1000)
 }).strict();
 export const buildArtifactSchema = z.object({
-    objectKey: z.string().min(3).max(512).regex(/^[A-Za-z0-9][A-Za-z0-9/_.-]*$/).refine(value => value.split("/").every(segment => segment.length > 0 && segment !== "." && segment !== "..")),
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
     sizeBytes: z.number().int().positive().max(20 * 1024 * 1024 * 1024),
     contentType: z.literal("application/zip")
@@ -430,15 +429,16 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
          FROM forgeos_artifact_upload_intents i
          JOIN forgeos_build_jobs j ON j.id=i.build_job_id
          WHERE i.build_job_id=$1 AND i.worker_id=$2 AND i.lease_token=$3
-           AND i.object_key=$4 AND i.expires_at > now() AND i.verified_at IS NULL
+           AND i.expires_at > now() AND i.verified_at IS NULL
            AND j.status='leased' AND j.worker_id=$2 AND j.lease_token=$3 AND j.lease_expires_at > now()`,
-        [id.data, parsed.data.workerId, parsed.data.leaseToken, artifact.objectKey]
+        [id.data, parsed.data.workerId, parsed.data.leaseToken]
       );
       if (!intent.rowCount) return reply.code(409).send({ error: "artifact_upload_intent_missing_or_expired" });
       if (intent.rows[0]!.expected_sha256 !== artifact.sha256 || Number(intent.rows[0]!.expected_size_bytes) !== artifact.sizeBytes || artifact.contentType !== "application/zip") {
         return reply.code(422).send({ error: "artifact_metadata_does_not_match_upload_intent" });
       }
-      await verifyUploadedArtifact(artifact.objectKey, artifact.sizeBytes, artifact.sha256);
+      const objectKey = intent.rows[0]!.object_key;
+      await verifyUploadedArtifact(objectKey, artifact.sizeBytes, artifact.sha256);
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
@@ -448,7 +448,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
             completed_at=now(),updated_at=now(),lease_token=NULL,lease_expires_at=NULL,worker_id=NULL
            WHERE id=$1 AND status='leased' AND worker_id=$2 AND lease_token=$3 AND lease_expires_at > now()
            RETURNING id,configuration_id,status,artifact_sha256,artifact_size_bytes,artifact_verified_at,completed_at`,
-          [id.data, parsed.data.workerId, parsed.data.leaseToken, artifact.objectKey, artifact.sha256, artifact.sizeBytes]
+          [id.data, parsed.data.workerId, parsed.data.leaseToken, objectKey, artifact.sha256, artifact.sizeBytes]
         );
         if (!result.rowCount) {
           await client.query("ROLLBACK");
