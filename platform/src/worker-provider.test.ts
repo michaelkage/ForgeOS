@@ -4,6 +4,7 @@ import {
   assertProvisionedWorkerMatches,
   assertWorkerProviderEligible,
   provisionWorkerSafely,
+  withDisposableWorker,
   validateWorkerProvisionRequest,
   type DisposableWorkerProvider,
   type WorkerProvisionRequest
@@ -151,4 +152,66 @@ test("tears down an instance if provider identity validation fails", async () =>
   };
   await assert.rejects(() => provisionWorkerSafely(mismatchedProvider, request), /different provider identity/);
   assert.equal(terminated, true);
+});
+
+test("disposable worker is terminated and shutdown-confirmed after success", async () => {
+  const calls: string[] = [];
+  const lifecycleProvider: DisposableWorkerProvider = {
+    ...provider,
+    async provision() {
+      calls.push("provision");
+      return {
+        provider: "test-vm", instanceId: "vm-lifecycle", jobId: request.jobId,
+        attempt: request.attempt, architecture: "x64",
+        imageDigest: request.requirements.workerImageDigest,
+        createdAt: new Date().toISOString()
+      };
+    },
+    async inspect() { calls.push("inspect"); return calls.filter(x => x === "terminate").length ? "stopped" : "running"; },
+    async terminate() { calls.push("terminate"); }
+  };
+  const value = await withDisposableWorker(lifecycleProvider, request, async () => {
+    calls.push("operation");
+    return "complete";
+  });
+  assert.equal(value, "complete");
+  assert.deepEqual(calls, ["provision", "inspect", "operation", "terminate", "inspect"]);
+});
+
+test("disposable worker is terminated when its operation fails", async () => {
+  let terminated = false;
+  const lifecycleProvider: DisposableWorkerProvider = {
+    ...provider,
+    async provision() {
+      return {
+        provider: "test-vm", instanceId: "vm-failure", jobId: request.jobId,
+        attempt: request.attempt, architecture: "x64",
+        imageDigest: request.requirements.workerImageDigest,
+        createdAt: new Date().toISOString()
+      };
+    },
+    async inspect() { return terminated ? "stopped" : "running"; },
+    async terminate() { terminated = true; }
+  };
+  await assert.rejects(() => withDisposableWorker(lifecycleProvider, request, async () => {
+    throw new Error("guest execution failed");
+  }), /guest execution failed/);
+  assert.equal(terminated, true);
+});
+
+test("does not report success when provider cannot confirm VM teardown", async () => {
+  const lifecycleProvider: DisposableWorkerProvider = {
+    ...provider,
+    async provision() {
+      return {
+        provider: "test-vm", instanceId: "vm-orphan-risk", jobId: request.jobId,
+        attempt: request.attempt, architecture: "x64",
+        imageDigest: request.requirements.workerImageDigest,
+        createdAt: new Date().toISOString()
+      };
+    },
+    async inspect() { return "unknown"; },
+    async terminate() {}
+  };
+  await assert.rejects(() => withDisposableWorker(lifecycleProvider, request, async () => "must-not-succeed"), /shutdown/);
 });
