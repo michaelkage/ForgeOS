@@ -14,6 +14,7 @@ This service adds account authentication, administrator-managed device profiles,
 - XML manifest syntax checks, root element checks, safe project path checks, and duplicate project path checks.
 - Durable build-job queue with immutable configuration/source snapshots, SHA-256 fingerprints, owner-scoped status/cancellation, authenticated worker claims, expiring leases, heartbeats, retry limits, and artifact metadata validation. Android execution remains disabled by default.
 - Provider-neutral disposable worker contract with fail-closed capability checks, immutable worker image digest pinning, bounded resource requests, job-attempt binding, and instance identity validation. This is an adapter contract and validation layer, not a cloud VM implementation.
+- Disposable worker lifecycle helper that always requests VM termination after the job operation and requires provider inspection to confirm the instance is stopped; teardown failure prevents success from being returned.
 
 ## Repository-specific scope
 
