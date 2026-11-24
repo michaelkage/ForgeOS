@@ -66,11 +66,18 @@ export async function withWorkerLease<T>(
 ): Promise<T> {
   validateLeaseOptions(options);
   const fetchImpl = options.fetchImpl ?? fetch;
+  if (options.signal?.aborted) {
+    throw new WorkerLeaseLostError(null, { cause: options.signal.reason });
+  }
   await sendHeartbeat(options, fetchImpl);
-  if (options.signal?.aborted) throw new WorkerLeaseLostError(null);
+  if (options.signal?.aborted) {
+    throw new WorkerLeaseLostError(null, { cause: options.signal.reason });
+  }
 
   const controller = new AbortController();
-  const forwardAbort = () => controller.abort(options.signal?.reason);
+  const forwardAbort = () => controller.abort(
+    new WorkerLeaseLostError(null, { cause: options.signal?.reason })
+  );
   options.signal?.addEventListener("abort", forwardAbort, { once: true });
   let leaseFailure: WorkerLeaseLostError | undefined;
   let heartbeatRunning = false;
@@ -93,14 +100,29 @@ export async function withWorkerLease<T>(
     const result = await operation({
       signal: controller.signal,
       confirmCompletion: () => {
+        if (controller.signal.aborted || leaseFailure) {
+          throw leaseFailure ?? (controller.signal.reason instanceof WorkerLeaseLostError
+            ? controller.signal.reason
+            : new WorkerLeaseLostError(null, { cause: controller.signal.reason }));
+        }
         completed = true;
         stopHeartbeats();
       }
     });
     if (leaseFailure && !completed) throw leaseFailure;
+    if (controller.signal.aborted && !completed) {
+      throw controller.signal.reason instanceof WorkerLeaseLostError
+        ? controller.signal.reason
+        : new WorkerLeaseLostError(null, { cause: controller.signal.reason });
+    }
     return result;
   } catch (error) {
     if (leaseFailure && !completed) throw leaseFailure;
+    if (controller.signal.aborted && !completed) {
+      throw controller.signal.reason instanceof WorkerLeaseLostError
+        ? controller.signal.reason
+        : new WorkerLeaseLostError(null, { cause: controller.signal.reason });
+    }
     throw error;
   } finally {
     stopHeartbeats();
