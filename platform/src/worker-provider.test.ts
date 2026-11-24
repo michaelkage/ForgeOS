@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   assertProvisionedWorkerMatches,
   assertWorkerProviderEligible,
+  provisionWorkerSafely,
   validateWorkerProvisionRequest,
   type DisposableWorkerProvider,
   type WorkerProvisionRequest
@@ -121,4 +122,25 @@ test("rejects a provider instance that does not match the requested job and imag
     ...instance,
     imageDigest: "sha256:" + "b".repeat(64)
   }), /unapproved image digest/);
+});
+
+test("tears down an instance if provider identity validation fails", async () => {
+  let terminated = false;
+  const mismatchedProvider: DisposableWorkerProvider = {
+    ...provider,
+    async provision() {
+      return {
+        provider: "unexpected-provider",
+        instanceId: "vm-orphan",
+        jobId: request.jobId,
+        attempt: request.attempt,
+        architecture: "x64",
+        imageDigest: request.requirements.workerImageDigest,
+        createdAt: new Date().toISOString()
+      };
+    },
+    async terminate() { terminated = true; }
+  };
+  await assert.rejects(() => provisionWorkerSafely(mismatchedProvider, request), /different provider identity/);
+  assert.equal(terminated, true);
 });
