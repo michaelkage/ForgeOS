@@ -9,7 +9,11 @@ import type { WorkerBuildSnapshot } from "./worker-snapshot.js";
 import type { SupervisedCommandResult } from "./worker-supervisor.js";
 
 function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (value === null || typeof value !== "object") {
+    const encoded = JSON.stringify(value);
+    if (encoded === undefined) throw new TypeError("Unsupported test snapshot value");
+    return encoded;
+  }
   if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
   const record = value as Record<string, unknown>;
   return "{" + Object.keys(record).sort().map(key => JSON.stringify(key) + ":" + canonicalJson(record[key])).join(",") + "}";
