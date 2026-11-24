@@ -275,3 +275,28 @@ test("does not start guest execution when cancellation occurs during VM inspecti
   assert.equal(operationStarted, false);
   assert.equal(terminated, true);
 });
+
+
+test("tears down an instance when provisioning completes after cancellation", async () => {
+  const controller = new AbortController();
+  let terminated = false;
+  const lateProvider: DisposableWorkerProvider = {
+    ...provider,
+    async provision() {
+      controller.abort(new Error("cancelled while provisioning"));
+      return {
+        provider: "test-vm", instanceId: "vm-late-provision", jobId: request.jobId,
+        attempt: request.attempt, architecture: "x86_64",
+        imageDigest: request.requirements.workerImageDigest,
+        createdAt: new Date().toISOString()
+      };
+    },
+    async terminate() { terminated = true; }
+  };
+
+  await assert.rejects(
+    () => provisionWorkerSafely(lateProvider, request, controller.signal),
+    /cancelled while provisioning/
+  );
+  assert.equal(terminated, true);
+});
