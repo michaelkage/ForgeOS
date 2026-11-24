@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,6 +7,13 @@ import { join } from "node:path";
 import { checkoutPinnedSources } from "./worker-source-checkout.js";
 import type { WorkerBuildSnapshot } from "./worker-snapshot.js";
 import type { SupervisedCommandResult } from "./worker-supervisor.js";
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return "[" + value.map(canonicalJson).join(",") + "]";
+  const record = value as Record<string, unknown>;
+  return "{" + Object.keys(record).sort().map(key => JSON.stringify(key) + ":" + canonicalJson(record[key])).join(",") + "}";
+}
 
 const sha = "a".repeat(40);
 const snapshot: WorkerBuildSnapshot = {
@@ -28,7 +36,7 @@ const snapshot: WorkerBuildSnapshot = {
   manifest: {
     path: ".repo/local_manifests/forgeos.xml",
     branch: "main",
-    sha256: "unused-by-checkout-test",
+    sha256: createHash("sha256").update("<manifest />").digest("hex"),
     content: "<manifest />"
   },
   deviceTree: {
@@ -48,19 +56,20 @@ const snapshot: WorkerBuildSnapshot = {
   validationReport: {},
   configurationUpdatedAt: new Date(0).toISOString()
 };
+const snapshotSha256 = createHash("sha256").update(canonicalJson(snapshot)).digest("hex");
 
 test("materializes exact manifest bytes and checks out only pinned commit IDs", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "forgeos-checkout-"));
   const calls: string[][] = [];
   try {
-    const result = await checkoutPinnedSources(snapshot, {
+    const result = await checkoutPinnedSources(snapshot, snapshotSha256, {
       workspace,
       runCommand: async (_command, args): Promise<SupervisedCommandResult> => {
         calls.push(args);
         return {
           exitCode: 0,
           signal: null,
-          stdout: args.includes("rev-parse") ? (args[args.length - 1] === "HEAD" && args.includes("000") ? sha : "b".repeat(40)) : "",
+          stdout: args.includes("rev-parse") ? (args[1]?.endsWith("/000") ? sha : "b".repeat(40)) : "",
           stderr: "",
           durationMs: 1
         };
@@ -112,7 +121,7 @@ test("stops before the next source when cancellation is signalled", async () => 
         if (args.includes("rev-parse")) controller.abort(new Error("lease lost"));
         return {
           exitCode: 0, signal: null,
-          stdout: args.includes("rev-parse") ? sha : "",
+          stdout: args.includes("rev-parse") ? (args[1]?.endsWith("/000") ? sha : "b".repeat(40)) : "",
           stderr: "", durationMs: 1
         };
       }
