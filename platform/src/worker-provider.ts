@@ -236,10 +236,10 @@ export async function withDisposableWorker<T>(
   }
 
   if (operationFailed && teardownError !== undefined) {
-    throw new AggregateError([operationError, teardownError], "Worker operation failed and VM teardown could not be confirmed");
+    throw new AggregateError([operationError, teardownError], "Worker operation failed and VM shutdown (teardown) could not be confirmed");
   }
   if (teardownError !== undefined) {
-    throw new AggregateError([teardownError], "VM teardown could not be confirmed");
+    throw new AggregateError([teardownError], "VM shutdown (teardown) could not be confirmed");
   }
   if (operationFailed) throw operationError;
   return result;
