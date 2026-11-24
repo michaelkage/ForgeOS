@@ -75,6 +75,25 @@ function workerAuthorized(request: FastifyRequest, reply: FastifyReply): boolean
   return true;
 }
 
+export function isWorkerLeaseCredentialValid(header: string | undefined, leaseToken: string): boolean {
+  if (typeof header !== "string" || !header.startsWith("Bearer ")) return false;
+  const supplied = Buffer.from(header.slice(7), "utf8");
+  const expected = Buffer.from(leaseToken, "utf8");
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+}
+
+function workerLeaseAuthorized(request: FastifyRequest, reply: FastifyReply, leaseToken: string): boolean {
+  if (!config.ENABLE_ANDROID_BUILDS || !config.BUILD_WORKER_SHARED_SECRET) {
+    void reply.code(503).send({ error: "build_workers_not_enabled" });
+    return false;
+  }
+  if (!isWorkerLeaseCredentialValid(request.headers.authorization, leaseToken)) {
+    void reply.code(401).send({ error: "worker_lease_authentication_failed" });
+    return false;
+  }
+  return true;
+}
+
 export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
   app.post("/api/configurations/:id/queue", async (request, reply) => {
     if (!requireUser(request, reply) || !requireCsrf(request, reply)) return;
@@ -384,10 +403,10 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post("/api/internal/build-jobs/:id/heartbeat", async (request, reply) => {
-    if (!workerAuthorized(request, reply)) return;
     const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
     const parsed = heartbeatSchema.safeParse(request.body);
     if (!id.success || !parsed.success) return reply.code(400).send({ error: "invalid_heartbeat" });
+    if (!workerLeaseAuthorized(request, reply, parsed.data.leaseToken)) return;
     const result = await query(
       `UPDATE forgeos_build_jobs SET lease_expires_at=now()+($4::text || ' seconds')::interval,updated_at=now()
        WHERE id=$1 AND status='leased' AND worker_id=$2 AND lease_token=$3 AND lease_expires_at > now()
@@ -399,10 +418,10 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post("/api/internal/build-jobs/:id/artifact-upload", async (request, reply) => {
-    if (!workerAuthorized(request, reply)) return;
     const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
     const parsed = uploadIntentSchema.safeParse(request.body);
     if (!id.success || !parsed.success) return reply.code(400).send({ error: "invalid_artifact_upload_intent" });
+    if (!workerLeaseAuthorized(request, reply, parsed.data.leaseToken)) return;
     try {
       const lease = await query<{ user_id: string; attempts: number }>(
         "SELECT user_id,attempts FROM forgeos_build_jobs WHERE id=$1 AND status='leased' AND worker_id=$2 AND lease_token=$3 AND lease_expires_at > now()",
@@ -455,10 +474,10 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post("/api/internal/build-jobs/:id/complete", async (request, reply) => {
-    if (!workerAuthorized(request, reply)) return;
     const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
     const parsed = completionSchema.safeParse(request.body);
     if (!id.success || !parsed.success) return reply.code(400).send({ error: "invalid_build_completion" });
+    if (!workerLeaseAuthorized(request, reply, parsed.data.leaseToken)) return;
     const artifact = parsed.data.artifact;
     try {
       const intent = await query<{ expected_sha256: string; expected_size_bytes: string; object_key: string }>(
@@ -515,10 +534,10 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post("/api/internal/build-jobs/:id/fail", async (request, reply) => {
-    if (!workerAuthorized(request, reply)) return;
     const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
     const parsed = failureSchema.safeParse(request.body);
     if (!id.success || !parsed.success) return reply.code(400).send({ error: "invalid_build_failure" });
+    if (!workerLeaseAuthorized(request, reply, parsed.data.leaseToken)) return;
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
