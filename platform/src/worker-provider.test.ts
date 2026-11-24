@@ -13,7 +13,7 @@ import {
 const request: WorkerProvisionRequest = {
   jobId: "123e4567-e89b-42d3-a456-426614174000",
   attempt: 1,
-  architecture: "x64",
+  architecture: "x86_64",
   romBase: "lineage",
   bootstrapCredential: "x".repeat(64),
   requirements: {
@@ -118,7 +118,7 @@ test("rejects a provider instance that does not match the requested job and imag
     instanceId: "vm-123",
     jobId: request.jobId,
     attempt: request.attempt,
-    architecture: "x64" as const,
+    architecture: "x86_64" as const,
     imageDigest: request.requirements.workerImageDigest,
     createdAt: new Date().toISOString()
   };
@@ -143,7 +143,7 @@ test("tears down an instance if provider identity validation fails", async () =>
         instanceId: "vm-orphan",
         jobId: request.jobId,
         attempt: request.attempt,
-        architecture: "x64",
+        architecture: "x86_64",
         imageDigest: request.requirements.workerImageDigest,
         createdAt: new Date().toISOString()
       };
@@ -162,7 +162,7 @@ test("disposable worker is terminated and shutdown-confirmed after success", asy
       calls.push("provision");
       return {
         provider: "test-vm", instanceId: "vm-lifecycle", jobId: request.jobId,
-        attempt: request.attempt, architecture: "x64",
+        attempt: request.attempt, architecture: "x86_64",
         imageDigest: request.requirements.workerImageDigest,
         createdAt: new Date().toISOString()
       };
@@ -185,7 +185,7 @@ test("disposable worker is terminated when its operation fails", async () => {
     async provision() {
       return {
         provider: "test-vm", instanceId: "vm-failure", jobId: request.jobId,
-        attempt: request.attempt, architecture: "x64",
+        attempt: request.attempt, architecture: "x86_64",
         imageDigest: request.requirements.workerImageDigest,
         createdAt: new Date().toISOString()
       };
@@ -205,7 +205,7 @@ test("does not report success when provider cannot confirm VM teardown", async (
     async provision() {
       return {
         provider: "test-vm", instanceId: "vm-orphan-risk", jobId: request.jobId,
-        attempt: request.attempt, architecture: "x64",
+        attempt: request.attempt, architecture: "x86_64",
         imageDigest: request.requirements.workerImageDigest,
         createdAt: new Date().toISOString()
       };
