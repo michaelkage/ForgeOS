@@ -7,7 +7,7 @@ export class WorkerLeaseLostError extends Error {
   }
 }
 
-export interface LeasedCommandOptions extends Omit<SupervisedCommandOptions, "signal"> {
+export interface WorkerLeaseOptions {
   apiBaseUrl: string;
   jobId: string;
   workerId: string;
@@ -18,7 +18,15 @@ export interface LeasedCommandOptions extends Omit<SupervisedCommandOptions, "si
   fetchImpl?: typeof fetch;
 }
 
-async function sendHeartbeat(options: LeasedCommandOptions, fetchImpl: typeof fetch): Promise<void> {
+export interface WorkerLeaseContext {
+  signal: AbortSignal;
+  /** Call only after the API confirms successful job completion. */
+  confirmCompletion(): void;
+}
+
+export interface LeasedCommandOptions extends WorkerLeaseOptions, Omit<SupervisedCommandOptions, "signal"> {}
+
+async function sendHeartbeat(options: WorkerLeaseOptions, fetchImpl: typeof fetch): Promise<void> {
   const url = new URL("/api/internal/build-jobs/" + options.jobId + "/heartbeat", options.apiBaseUrl);
   let response: Response;
   try {
@@ -35,12 +43,7 @@ async function sendHeartbeat(options: LeasedCommandOptions, fetchImpl: typeof fe
   if (!response.ok) throw new WorkerLeaseLostError(response.status);
 }
 
-/** Run one command while renewing its job lease. Any heartbeat failure aborts the process group. */
-export async function runCommandWithLease(
-  command: string,
-  args: string[],
-  options: LeasedCommandOptions
-): Promise<SupervisedCommandResult> {
+function validateLeaseOptions(options: WorkerLeaseOptions): void {
   const endpoint = new URL(options.apiBaseUrl);
   if (endpoint.protocol !== "https:") throw new TypeError("Worker control-plane URL must use HTTPS");
   if (!/^[0-9a-f-]{36}$/i.test(options.jobId) || !/^[0-9a-f-]{36}$/i.test(options.leaseToken)) {
@@ -50,36 +53,71 @@ export async function runCommandWithLease(
   if (!Number.isSafeInteger(intervalMs) || intervalMs < 5_000 || intervalMs > 120_000) {
     throw new RangeError("heartbeatIntervalMs must be between 5000 and 120000");
   }
+}
+
+/**
+ * Holds a job lease across a complete worker operation (sync, build, artifact upload,
+ * and completion). Any rejected or unreachable heartbeat aborts the supplied signal.
+ * The operation must call confirmCompletion only after the API returns success.
+ */
+export async function withWorkerLease<T>(
+  options: WorkerLeaseOptions,
+  operation: (lease: WorkerLeaseContext) => Promise<T>
+): Promise<T> {
+  validateLeaseOptions(options);
   const fetchImpl = options.fetchImpl ?? fetch;
   await sendHeartbeat(options, fetchImpl);
   if (options.signal?.aborted) throw new WorkerLeaseLostError(null);
+
   const controller = new AbortController();
   const forwardAbort = () => controller.abort(options.signal?.reason);
   options.signal?.addEventListener("abort", forwardAbort, { once: true });
   let leaseFailure: WorkerLeaseLostError | undefined;
   let heartbeatRunning = false;
-  const timer = setInterval(() => {
-    if (heartbeatRunning || leaseFailure || controller.signal.aborted) return;
+  let completed = false;
+  let timer: NodeJS.Timeout | undefined;
+  const stopHeartbeats = () => {
+    if (timer) clearInterval(timer);
+  };
+  timer = setInterval(() => {
+    if (heartbeatRunning || leaseFailure || completed || controller.signal.aborted) return;
     heartbeatRunning = true;
     void sendHeartbeat(options, fetchImpl).catch(error => {
+      if (completed) return;
       leaseFailure = error instanceof WorkerLeaseLostError ? error : new WorkerLeaseLostError(null, { cause: error });
       controller.abort(leaseFailure);
     }).finally(() => { heartbeatRunning = false; });
-  }, intervalMs);
+  }, options.heartbeatIntervalMs ?? 45_000);
   timer.unref();
+
   try {
-    const result = await runSupervisedCommand(command, args, {
-      cwd: options.cwd, env: options.env, timeoutMs: options.timeoutMs,
-      terminationGraceMs: options.terminationGraceMs, maxOutputBytes: options.maxOutputBytes,
-      signal: controller.signal
+    const result = await operation({
+      signal: controller.signal,
+      confirmCompletion: () => {
+        completed = true;
+        stopHeartbeats();
+      }
     });
-    if (leaseFailure) throw leaseFailure;
+    if (leaseFailure && !completed) throw leaseFailure;
     return result;
   } catch (error) {
-    if (leaseFailure) throw leaseFailure;
+    if (leaseFailure && !completed) throw leaseFailure;
     throw error;
   } finally {
-    clearInterval(timer);
+    stopHeartbeats();
     options.signal?.removeEventListener("abort", forwardAbort);
   }
+}
+
+/** Run one command while renewing its job lease; use withWorkerLease for multi-step jobs. */
+export async function runCommandWithLease(
+  command: string,
+  args: string[],
+  options: LeasedCommandOptions
+): Promise<SupervisedCommandResult> {
+  return withWorkerLease(options, lease => runSupervisedCommand(command, args, {
+    cwd: options.cwd, env: options.env, timeoutMs: options.timeoutMs,
+    terminationGraceMs: options.terminationGraceMs, maxOutputBytes: options.maxOutputBytes,
+    signal: lease.signal
+  }));
 }
