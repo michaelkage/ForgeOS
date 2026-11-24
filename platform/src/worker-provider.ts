@@ -114,6 +114,19 @@ export function validateWorkerProvisionRequest(request: WorkerProvisionRequest):
   if (request.bootstrapCredential.length < 32 || request.bootstrapCredential.length > 4096) {
     throw new TypeError("bootstrapCredential must be a bounded high-entropy credential");
   }
+  const requiredControls: Array<keyof WorkerIsolationRequirements> = [
+    "disposable", "singleJob", "microVmOrDedicatedVm", "nonRoot", "noHostMounts",
+    "noContainerSocket", "noPrivilegedMode", "noHostPidNamespace",
+    "encryptedEphemeralDisk", "destroyAfterJob"
+  ];
+  for (const control of requiredControls) {
+    if (request.requirements[control] !== true) {
+      throw new TypeError(control + " must be explicitly enabled");
+    }
+  }
+  if (request.architecture !== "x64" && request.architecture !== "arm64") {
+    throw new TypeError("architecture is unsupported");
+  }
   const { resources } = request.requirements;
   const bounds: Array<[number, number, number, string]> = [
     [resources.cpuCores, 2, 128, "cpuCores"],
