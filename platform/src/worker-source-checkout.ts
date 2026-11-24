@@ -1,7 +1,7 @@
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { runSupervisedCommand, type SupervisedCommandResult } from "./worker-supervisor.js";
-import type { PinnedWorkerSource, WorkerBuildSnapshot } from "./worker-snapshot.js";
+import { verifyWorkerSnapshot, type PinnedWorkerSource, type WorkerBuildSnapshot } from "./worker-snapshot.js";
 
 export interface PinnedCheckout {
   source: PinnedWorkerSource;
@@ -56,9 +56,11 @@ async function runGit(
  * runs inside the disposable guest VM; it is not a host-side sandbox.
  */
 export async function checkoutPinnedSources(
-  snapshot: WorkerBuildSnapshot,
+  snapshotInput: unknown,
+  expectedSnapshotSha256: string,
   options: CheckoutOptions
 ): Promise<{ manifestPath: string; checkouts: PinnedCheckout[] }> {
+  const snapshot: WorkerBuildSnapshot = verifyWorkerSnapshot(snapshotInput, expectedSnapshotSha256);
   const runner = options.runCommand ?? runSupervisedCommand;
   const timeoutMs = options.commandTimeoutMs ?? 30 * 60 * 1000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2 * 60 * 60 * 1000) {
