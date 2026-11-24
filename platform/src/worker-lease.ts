@@ -88,7 +88,6 @@ export async function withWorkerLease<T>(
       controller.abort(leaseFailure);
     }).finally(() => { heartbeatRunning = false; });
   }, options.heartbeatIntervalMs ?? 45_000);
-  timer.unref();
 
   try {
     const result = await operation({
