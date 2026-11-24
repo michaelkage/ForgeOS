@@ -211,6 +211,7 @@ export async function withDisposableWorker<T>(
   const instance = await provisionWorkerSafely(provider, request, signal);
   let result!: T;
   let operationError: unknown;
+  let operationFailed = false;
   try {
     if (signal?.aborted) throw signal.reason ?? new Error("Worker provisioning was cancelled");
     const state = await provider.inspect(instance);
@@ -219,12 +220,13 @@ export async function withDisposableWorker<T>(
     }
     result = await operation(instance);
   } catch (error) {
+    operationFailed = true;
     operationError = error;
   }
 
   let teardownError: unknown;
   try {
-    await provider.terminate(instance, operationError ? "job-operation-failed" : "job-operation-finished");
+    await provider.terminate(instance, operationFailed ? "job-operation-failed" : "job-operation-finished");
     const state = await provider.inspect(instance);
     if (state !== "stopped") {
       throw new Error("Provider did not confirm worker shutdown after termination");
@@ -233,12 +235,12 @@ export async function withDisposableWorker<T>(
     teardownError = error;
   }
 
-  if (operationError !== undefined && teardownError !== undefined) {
+  if (operationFailed && teardownError !== undefined) {
     throw new AggregateError([operationError, teardownError], "Worker operation failed and VM teardown could not be confirmed");
   }
   if (teardownError !== undefined) {
     throw new AggregateError([teardownError], "VM teardown could not be confirmed");
   }
-  if (operationError !== undefined) throw operationError;
+  if (operationFailed) throw operationError;
   return result;
 }
