@@ -6,7 +6,7 @@
  * selected by a production worker scheduler.
  */
 
-export type WorkerArchitecture = "x64" | "arm64";
+export type WorkerArchitecture = "x86_64" | "arm64";
 
 export interface WorkerResourceLimits {
   cpuCores: number;
@@ -124,7 +124,7 @@ export function validateWorkerProvisionRequest(request: WorkerProvisionRequest):
       throw new TypeError(control + " must be explicitly enabled");
     }
   }
-  if (request.architecture !== "x64" && request.architecture !== "arm64") {
+  if (request.architecture !== "x86_64" && request.architecture !== "arm64") {
     throw new TypeError("architecture is unsupported");
   }
   const { resources } = request.requirements;
