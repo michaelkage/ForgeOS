@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { runCommandWithLease, WorkerLeaseLostError } from "./worker-lease.js";
+import { runCommandWithLease, withWorkerLease, WorkerLeaseLostError } from "./worker-lease.js";
 
 const base = {
   apiBaseUrl: "https://forgeos.invalid",
@@ -42,4 +42,32 @@ test("kills the running process group when a later heartbeat is rejected", async
     ...base, heartbeatIntervalMs: 5_000, fetchImpl, timeoutMs: 20_000
   }), error => error instanceof WorkerLeaseLostError && error.httpStatus === 409);
   assert.ok(calls >= 2);
+});
+
+test("keeps heartbeating across non-command job phases and aborts on lease loss", async () => {
+  let calls = 0;
+  const fetchImpl: typeof fetch = async () => {
+    calls++;
+    return new Response(null, { status: calls === 1 ? 204 : 409 });
+  };
+  await assert.rejects(withWorkerLease({ ...base, fetchImpl }, async lease => {
+    await new Promise<void>((resolve, reject) => {
+      lease.signal.addEventListener("abort", () => reject(lease.signal.reason), { once: true });
+    });
+  }), error => error instanceof WorkerLeaseLostError && error.httpStatus === 409);
+  assert.ok(calls >= 2);
+});
+
+test("stops lease heartbeats only after successful completion is confirmed", async () => {
+  let calls = 0;
+  const fetchImpl: typeof fetch = async () => {
+    calls++;
+    return new Response(null, { status: 204 });
+  };
+  const result = await withWorkerLease({ ...base, fetchImpl }, async lease => {
+    lease.confirmCompletion();
+    return "completed";
+  });
+  assert.equal(result, "completed");
+  assert.equal(calls, 1);
 });
