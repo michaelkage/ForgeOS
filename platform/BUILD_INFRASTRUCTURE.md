@@ -12,6 +12,12 @@ The artifact bucket is private and separate from the API filesystem. Objects are
 
 The signing service is a separate trust domain. Neither the API nor general build workers receive production signing private keys. Signing accepts only a completed, verified unsigned artifact and an explicit signing policy; it returns a signed artifact plus an auditable signing record.
 
+## Provider adapter contract
+
+A provider adapter must implement `platform/src/worker-provider.ts`. The contract separates scheduler intent from cloud-specific VM APIs and makes isolation claims explicit. Before a provider can be selected, `assertWorkerProviderEligible` rejects adapters that cannot attest to disposable VMs, a dedicated kernel, encrypted ephemeral disks, hard CPU/memory/disk/PID limits, wall-clock enforcement, egress filtering, metadata-service blocking, and guaranteed teardown. Provision requests bind one job attempt to an immutable `sha256:` worker image digest, architecture, resource limits, and a named egress policy. Returned instance metadata is checked against the requested job, attempt, architecture, and image digest.
+
+This is a fail-closed contract and unit-tested validation layer, not a VM implementation or a cryptographic attestation mechanism. A cloud adapter must still enforce each property at the provider/host boundary, authenticate provider responses, test cancellation and teardown under provider failures, and supply integration evidence. A provider that merely reports capability flags without enforcing them is not eligible for production.
+
 ## Required implementation sequence
 
 ### 1. Private S3-compatible artifact storage
