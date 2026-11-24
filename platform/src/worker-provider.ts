@@ -152,3 +152,34 @@ export function assertProvisionedWorkerMatches(
     throw new Error("Provider returned incomplete worker identity metadata");
   }
 }
+
+/**
+ * Provision only through an eligible provider and destroy any instance whose
+ * returned identity does not match the immutable request.
+ */
+export async function provisionWorkerSafely(
+  provider: DisposableWorkerProvider,
+  request: WorkerProvisionRequest,
+  signal?: AbortSignal
+): Promise<WorkerInstance> {
+  assertWorkerProviderEligible(provider);
+  validateWorkerProvisionRequest(request);
+  const instance = await provider.provision(request, signal);
+  try {
+    assertProvisionedWorkerMatches(request, instance);
+    if (instance.provider !== provider.capabilities.provider) {
+      throw new Error("Provider returned an instance under a different provider identity");
+    }
+    return instance;
+  } catch (validationError) {
+    try {
+      await provider.terminate(instance, "provisioned-instance-validation-failed");
+    } catch (terminationError) {
+      throw new AggregateError(
+        [validationError, terminationError],
+        "Worker instance failed validation and provider teardown also failed"
+      );
+    }
+    throw validationError;
+  }
+}
