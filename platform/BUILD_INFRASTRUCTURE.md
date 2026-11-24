@@ -49,6 +49,12 @@ A worker's completion report is only a claim, never proof. Before changing a job
 
 Downloads require an authenticated user session and an ownership query on both job ID and user ID. Only succeeded jobs with verified artifact metadata may receive a short-lived presigned GET URL. Never return raw bucket credentials or accept an object key from the caller. Log issuance without logging the signed URL.
 
+### 2a. Worker-side snapshot verification
+
+Implemented as a standalone worker primitive in `platform/src/worker-snapshot.ts`: independently recompute the canonical JSON SHA-256 before trusting any snapshot field; require schema version 1 and the expected configuration/device/manifest/source sections; verify the embedded manifest's exact UTF-8 SHA-256; require pinned source commits to be full 40-character Git SHAs; constrain source repositories to canonical HTTPS GitHub owner/repository URLs; and reject unsafe relative source paths and excessive source-input counts. Tests cover fingerprint tampering, manifest-byte changes, mutable/non-GitHub URLs, short SHAs, path traversal, unsupported schema versions, and source-count bounds.
+
+This is input validation only. The production worker must still fetch each repository, verify the checked-out HEAD equals the pinned commit, and run the manifest/build tooling in the disposable VM. It must never resolve a mutable branch at execution time.
+
 ### 3. Disposable Android build workers
 
 Workers run one job per disposable VM or isolated microVM. A container alone is not a sufficient hostile-code boundary for untrusted Android build scripts. The production worker host must provide:
