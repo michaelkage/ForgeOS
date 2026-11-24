@@ -67,7 +67,7 @@ Cancellation is a control-plane state transition and a worker process lifecycle 
 - incomplete uploads are aborted and attempt-scoped temporary objects are deleted;
 - completion/failure calls after lease loss are rejected; cancellation must remain terminal.
 
-The supervisor and heartbeat-coupled runner primitives are implemented and unit-tested, but no production worker runtime invokes them yet. The runner performs an initial heartbeat before launching a command, renews at a bounded interval, and aborts the supervised process group on any rejected or unreachable heartbeat. The API currently rejects heartbeat/completion after cancellation or lease loss; the future worker must treat that response and any lost control-plane connection as a hard stop.
+The supervisor and heartbeat-coupled runner primitives are implemented and unit-tested, but no production worker runtime invokes them yet. The lease guard performs an initial heartbeat, renews at a bounded interval across the full job lifecycle (including sync, build, upload, and completion), and aborts its signal on any rejected or unreachable heartbeat. The process supervisor connects that signal to process-group termination; a worker confirms completion only after the API returns success. The API currently rejects heartbeat/completion after cancellation or lease loss; the future worker must treat that response and any lost control-plane connection as a hard stop.
 
 ### 5. Isolated ROM signing
 
