@@ -1,12 +1,12 @@
 # ForgeOS build execution security design
 
-Status: mixed implementation and architecture contract. The API now implements S3-compatible SigV4 presigned upload/download URLs, lease-bound upload intents, conditional write-once uploads, server-side HEAD checks, streamed SHA-256 verification, and owner-authorized downloads. This does not mean a storage provider is configured or that build execution is safe to enable. Disposable Android VM isolation, cgroup resource enforcement, isolated ROM signing, host-enforced resource accounting, centralized logs, alerting, and production observability are not implemented. An append-only PostgreSQL job-event ledger records selected queue and artifact lifecycle transitions. A reusable process-group supervisor primitive is implemented and tested, but is not yet wired into a production worker runtime. Keep `ENABLE_ANDROID_BUILDS=false` until every launch gate below is implemented and tested.
+Status: mixed implementation and architecture contract. The API now implements S3-compatible SigV4 presigned upload/download URLs, lease-bound upload intents, conditional write-once uploads, server-side HEAD checks, streamed SHA-256 verification, and owner-authorized downloads. This does not mean a storage provider is configured or that build execution is safe to enable. Disposable Android VM isolation, cgroup resource enforcement, isolated ROM signing, host-enforced resource accounting, centralized logs, alerting, and production observability are not implemented. An append-only PostgreSQL job-event ledger records selected queue and artifact lifecycle transitions. A reusable process-group supervisor and heartbeat-coupled lease command runner are implemented and tested, but neither is yet wired into a production worker runtime. Keep `ENABLE_ANDROID_BUILDS=false` until every launch gate below is implemented and tested.
 
 ## Trust boundaries
 
 The API is the control plane. It authenticates users, validates immutable build snapshots, allocates leases, authorizes artifact access, and records state. It must never execute repository-provided build scripts, mount signing keys, or proxy arbitrary worker traffic.
 
-Build workers are disposable, single-job execution environments. Treat every manifest, device tree, kernel tree, vendor tree, build script, downloaded archive, and generated artifact as untrusted. A worker receives only a job snapshot, a short-lived job-scoped storage capability, and the minimum control-plane credentials needed to heartbeat and report status. The shared worker secret currently used by the queue is a bootstrap mechanism, not a suitable long-term per-worker identity system.
+Build workers are disposable, single-job execution environments. Treat every manifest, device tree, kernel tree, vendor tree, build script, downloaded archive, and generated artifact as untrusted. A worker receives only a job snapshot, a short-lived job-scoped storage capability, and the minimum control-plane credentials needed to heartbeat and report status. The shared worker secret is used only to bootstrap claims. Each successful claim returns a high-entropy per-job lease token that is also required as a bearer credential for heartbeat, upload-intent, completion, and failure requests; the API checks it against the request token and active database lease.
 
 The artifact bucket is private and separate from the API filesystem. Objects are addressed by server-generated keys under a job/user namespace. Clients never choose bucket names, arbitrary object keys, ACLs, or storage endpoints. No public ACL or anonymous bucket policy is permitted.
 
@@ -67,7 +67,7 @@ Cancellation is a control-plane state transition and a worker process lifecycle 
 - incomplete uploads are aborted and attempt-scoped temporary objects are deleted;
 - completion/failure calls after lease loss are rejected; cancellation must remain terminal.
 
-The supervisor primitive is implemented and unit-tested, but no production worker runtime invokes it yet. The API currently rejects heartbeat/completion after cancellation or lease loss; the future worker must treat that response and any lost control-plane connection as a hard stop.
+The supervisor and heartbeat-coupled runner primitives are implemented and unit-tested, but no production worker runtime invokes them yet. The runner performs an initial heartbeat before launching a command, renews at a bounded interval, and aborts the supervised process group on any rejected or unreachable heartbeat. The API currently rejects heartbeat/completion after cancellation or lease loss; the future worker must treat that response and any lost control-plane connection as a hard stop.
 
 ### 5. Isolated ROM signing
 
