@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ForgeOS Studio</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<main>
+<header><div><h1>ForgeOS Studio</h1><p class="subtitle">Configure a device-specific ROM build from verified source manifests.</p></div><div class="actions"><span id="identity" class="muted">Not signed in</span><button id="logout" class="secondary hidden">Sign out</button></div></header>
+<div id="notice" class="status">Sign in or create an account to start.</div>
+<section id="auth" class="panel">
+<h2>Account</h2>
+<div class="grid">
+<form id="loginForm"><h3>Sign in</h3><div class="field"><label>Email</label><input name="email" type="email" autocomplete="email" required></div><div class="field"><label>Password</label><input name="password" type="password" autocomplete="current-password" required></div><button>Sign in</button></form>
+<form id="registerForm"><h3>Create account</h3><div class="field"><label>Email</label><input name="email" type="email" autocomplete="email" required></div><div class="field"><label>Password (12+ characters)</label><input name="password" type="password" minlength="12" autocomplete="new-password" required></div><button>Create account</button></form>
+</div>
+</section>
+<section id="workspace" class="hidden">
+<div class="panel"><h2>New ROM configuration</h2>
+<form id="configForm">
+<div class="grid">
+<div class="field"><label>Configuration name</label><input name="name" maxlength="80" placeholder="My daily driver" required></div>
+<div class="field"><label>Supported device</label><select name="deviceId" id="device" required><option value="">Loading devices…</option></select></div>
+<div class="field"><label>ROM base</label><select name="romBase" id="romBase" required></select></div>
+<div class="field"><label>Root method</label><select name="rootMethod"><option value="none">No root</option><option value="magisk">Magisk</option><option value="kernelsu">KernelSU</option><option value="apatch">APatch</option></select></div>
+</div>
+<div class="checks"><label><input type="checkbox" name="includeGapps"> Include Google apps (selection only)</label><label><input type="checkbox" name="includeMicroG"> Include microG (selection only)</label></div>
+<div class="field"><label>Debloat package names (one package per line)</label><textarea name="debloatPackages" placeholder="com.example.unwantedapp"></textarea></div>
+<div class="field"><label>Manifest revision override (leave blank to use device profile branch)</label><input name="manifestRevision" maxlength="100"></div>
+<div class="actions"><button type="submit">Save configuration</button><span class="muted">Saved as a draft; nothing is compiled.</span></div>
+</form>
+</div>
+<div class="panel"><h2>Your configurations</h2><div id="configs" class="muted">No saved configurations yet.</div></div>
+<div class="panel"><div class="actions"><h2>Build jobs</h2><button id="refreshJobs" class="secondary" type="button">Refresh</button></div><p id="buildAvailability" class="muted">Checking build execution status…</p><div id="buildJobs" class="muted">No build jobs yet.</div></div>
+<section id="adminPanel" class="panel hidden"><h2>Device administration</h2><p>Only add a device after checking its device tree, kernel, vendor blobs and ROM branch.</p>
+<form id="deviceForm">
+<div class="grid">
+<div class="field"><label>Device codename</label><input name="codename" pattern="[a-z0-9][a-z0-9_-]{1,63}" required></div>
+<div class="field"><label>Manufacturer</label><input name="manufacturer" required></div>
+<div class="field"><label>Model</label><input name="model" required></div>
+<div class="field"><label>Chipset (optional)</label><input name="chipset"></div>
+<div class="field"><label>Architecture</label><select name="architecture"><option>arm64</option><option>arm</option><option>x86_64</option></select></div>
+</div>
+<div class="checks"><label><input type="checkbox" name="lineage"> LineageOS</label><label><input type="checkbox" name="crdroid"> crDroid</label></div>
+<div class="field"><label>Lineage ROM manifest branch</label><input name="lineageBranch" value="lineage-24.0"></div>
+<div class="field"><label>Lineage device-tree branch</label><input name="lineageDeviceBranch" value="lineage-24.0"></div>
+<div class="field"><label>crDroid ROM manifest branch</label><input name="crdroidBranch" value="17.0"></div>
+<div class="field"><label>crDroid device-tree branch</label><input name="crdroidDeviceBranch" value="17.0"></div>
+<div class="field"><label>Device tree GitHub repository URL</label><input name="deviceRepositoryUrl" type="url" placeholder="https://github.com/LineageOS/android_device_vendor_codename" required></div>
+<div class="field"><label>Device tree path within repository (optional)</label><input name="deviceRepositoryPath" placeholder="Leave blank to inspect repository root"></div>
+<button type="submit">Add device and verify source</button>
+</form>
+<div id="adminDeviceInventory" class="card"><h3>Registered device profiles</h3><div class="muted">Loading…</div></div>
+</section>
+</section>
+<div class="warning">Build execution is disabled. Root choices and app/debloat options are stored as configuration metadata only; this service does not inject root, modify system images, sync source, or produce flashable ZIPs.</div>
+</main>
+<script src="/app.js" defer></script>
+</body></html>
