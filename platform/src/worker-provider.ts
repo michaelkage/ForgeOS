@@ -205,7 +205,7 @@ export async function provisionWorkerSafely(
 export async function withDisposableWorker<T>(
   provider: DisposableWorkerProvider,
   request: WorkerProvisionRequest,
-  operation: (instance: WorkerInstance) => Promise<T>,
+  operation: (instance: WorkerInstance, signal?: AbortSignal) => Promise<T>,
   signal?: AbortSignal
 ): Promise<T> {
   const instance = await provisionWorkerSafely(provider, request, signal);
@@ -218,7 +218,7 @@ export async function withDisposableWorker<T>(
     if (state !== "running") {
       throw new Error("Newly provisioned worker is not running");
     }
-    result = await operation(instance);
+    result = await operation(instance, signal);
   } catch (error) {
     operationFailed = true;
     operationError = error;
