@@ -101,7 +101,7 @@ test("refuses to overwrite an existing manifest", async () => {
     const { mkdir, writeFile } = await import("node:fs/promises");
     await mkdir(join(workspace, ".repo/local_manifests"), { recursive: true });
     await writeFile(manifest, "attacker-controlled");
-    await assert.rejects(() => checkoutPinnedSources(snapshot, {
+    await assert.rejects(() => checkoutPinnedSources(snapshot, snapshotSha256, {
       workspace,
       runCommand: async () => {
         throw new Error("git must not run after manifest collision");
@@ -117,7 +117,7 @@ test("stops before the next source when cancellation is signalled", async () => 
   const controller = new AbortController();
   let commands = 0;
   try {
-    await assert.rejects(() => checkoutPinnedSources(snapshot, {
+    await assert.rejects(() => checkoutPinnedSources(snapshot, snapshotSha256, {
       workspace,
       signal: controller.signal,
       runCommand: async (_command, args): Promise<SupervisedCommandResult> => {
