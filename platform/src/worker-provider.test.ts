@@ -84,6 +84,14 @@ test("rejects undersized or excessive resource requests", () => {
   }), /wallTimeSeconds/);
 });
 
+test("rejects runtime requests that disable a required isolation control", () => {
+  const unsafe = {
+    ...request,
+    requirements: { ...request.requirements, noHostMounts: false }
+  } as unknown as WorkerProvisionRequest;
+  assert.throws(() => validateWorkerProvisionRequest(unsafe), /noHostMounts/);
+});
+
 test("rejects mutable image tags instead of immutable image digests", () => {
   assert.throws(() => validateWorkerProvisionRequest({
     ...request,
