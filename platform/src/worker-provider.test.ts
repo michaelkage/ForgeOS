@@ -239,3 +239,64 @@ test("passes the lease cancellation signal to the job operation and tears down",
   }, controller.signal), /lease lost/);
   assert.equal(terminated, true);
 });
+
+
+test("does not start guest execution when cancellation occurs during VM inspection", async () => {
+  const controller = new AbortController();
+  let operationStarted = false;
+  let terminated = false;
+  const lifecycleProvider: DisposableWorkerProvider = {
+    ...provider,
+    async provision() {
+      return {
+        provider: "test-vm", instanceId: "vm-inspect-cancel", jobId: request.jobId,
+        attempt: request.attempt, architecture: "x86_64",
+        imageDigest: request.requirements.workerImageDigest,
+        createdAt: new Date().toISOString()
+      };
+    },
+    async inspect() {
+      if (!terminated) controller.abort(new Error("cancelled during inspection"));
+      return terminated ? "stopped" : "running";
+    },
+    async terminate() { terminated = true; }
+  };
+
+  await assert.rejects(() => withDisposableWorker(
+    lifecycleProvider,
+    request,
+    async () => {
+      operationStarted = true;
+      return "must-not-run";
+    },
+    controller.signal
+  ), /cancelled during inspection/);
+
+  assert.equal(operationStarted, false);
+  assert.equal(terminated, true);
+});
+
+
+test("tears down an instance when provisioning completes after cancellation", async () => {
+  const controller = new AbortController();
+  let terminated = false;
+  const lateProvider: DisposableWorkerProvider = {
+    ...provider,
+    async provision() {
+      controller.abort(new Error("cancelled while provisioning"));
+      return {
+        provider: "test-vm", instanceId: "vm-late-provision", jobId: request.jobId,
+        attempt: request.attempt, architecture: "x86_64",
+        imageDigest: request.requirements.workerImageDigest,
+        createdAt: new Date().toISOString()
+      };
+    },
+    async terminate() { terminated = true; }
+  };
+
+  await assert.rejects(
+    () => provisionWorkerSafely(lateProvider, request, controller.signal),
+    /cancelled while provisioning/
+  );
+  assert.equal(terminated, true);
+});
