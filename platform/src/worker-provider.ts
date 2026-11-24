@@ -196,3 +196,49 @@ export async function provisionWorkerSafely(
     throw validationError;
   }
 }
+
+/**
+ * Owns a provisioned VM for exactly one operation. Teardown is mandatory on
+ * success, failure, and cancellation; a provider that cannot confirm shutdown
+ * causes the overall operation to fail rather than silently leaking compute.
+ */
+export async function withDisposableWorker<T>(
+  provider: DisposableWorkerProvider,
+  request: WorkerProvisionRequest,
+  operation: (instance: WorkerInstance) => Promise<T>,
+  signal?: AbortSignal
+): Promise<T> {
+  const instance = await provisionWorkerSafely(provider, request, signal);
+  let result!: T;
+  let operationError: unknown;
+  try {
+    if (signal?.aborted) throw signal.reason ?? new Error("Worker provisioning was cancelled");
+    const state = await provider.inspect(instance);
+    if (state !== "running") {
+      throw new Error("Newly provisioned worker is not running");
+    }
+    result = await operation(instance);
+  } catch (error) {
+    operationError = error;
+  }
+
+  let teardownError: unknown;
+  try {
+    await provider.terminate(instance, operationError ? "job-operation-failed" : "job-operation-finished");
+    const state = await provider.inspect(instance);
+    if (state !== "stopped") {
+      throw new Error("Provider did not confirm worker shutdown after termination");
+    }
+  } catch (error) {
+    teardownError = error;
+  }
+
+  if (operationError !== undefined && teardownError !== undefined) {
+    throw new AggregateError([operationError, teardownError], "Worker operation failed and VM teardown could not be confirmed");
+  }
+  if (teardownError !== undefined) {
+    throw new AggregateError([teardownError], "VM teardown could not be confirmed");
+  }
+  if (operationError !== undefined) throw operationError;
+  return result;
+}
