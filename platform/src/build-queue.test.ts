@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildArtifactSchema, verifyBuildSnapshot, workerClaimSchema } from "./build-queue.js";
+import { buildArtifactSchema, isWorkerLeaseCredentialValid, verifyBuildSnapshot, workerClaimSchema } from "./build-queue.js";
 import { createHash } from "node:crypto";
 
 const validArtifact = {
@@ -41,4 +41,13 @@ test("worker claim requires explicit supported architectures and ROM bases", () 
   assert.equal(workerClaimSchema.safeParse({ ...claim, architectures: [] }).success, false);
   assert.equal(workerClaimSchema.safeParse({ ...claim, romBases: ["evolution"] }).success, false);
   assert.equal(workerClaimSchema.safeParse({ ...claim, leaseSeconds: 10 }).success, false);
+});
+
+test("job lease bearer credential is exact, scoped, and rejects malformed headers", () => {
+  const lease = "00000000-0000-4000-8000-000000000001";
+  assert.equal(isWorkerLeaseCredentialValid("Bearer " + lease, lease), true);
+  assert.equal(isWorkerLeaseCredentialValid("Bearer 00000000-0000-4000-8000-000000000002", lease), false);
+  assert.equal(isWorkerLeaseCredentialValid(lease, lease), false);
+  assert.equal(isWorkerLeaseCredentialValid("bearer " + lease, lease), false);
+  assert.equal(isWorkerLeaseCredentialValid(undefined, lease), false);
 });
