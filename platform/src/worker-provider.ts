@@ -183,6 +183,11 @@ export async function provisionWorkerSafely(
     if (instance.provider !== provider.capabilities.provider) {
       throw new Error("Provider returned an instance under a different provider identity");
     }
+    // A provider can complete its API request after the caller has cancelled.
+    // Never hand that late instance to the caller; route it through teardown.
+    if (signal?.aborted) {
+      throw signal.reason ?? new Error("Worker provisioning was cancelled");
+    }
     return instance;
   } catch (validationError) {
     try {
