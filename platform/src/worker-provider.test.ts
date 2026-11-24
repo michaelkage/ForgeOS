@@ -215,3 +215,27 @@ test("does not report success when provider cannot confirm VM teardown", async (
   };
   await assert.rejects(() => withDisposableWorker(lifecycleProvider, request, async () => "must-not-succeed"), /shutdown/);
 });
+
+test("passes the lease cancellation signal to the job operation and tears down", async () => {
+  const controller = new AbortController();
+  let terminated = false;
+  const lifecycleProvider: DisposableWorkerProvider = {
+    ...provider,
+    async provision() {
+      return {
+        provider: "test-vm", instanceId: "vm-cancel", jobId: request.jobId,
+        attempt: request.attempt, architecture: "x86_64",
+        imageDigest: request.requirements.workerImageDigest,
+        createdAt: new Date().toISOString()
+      };
+    },
+    async inspect() { return terminated ? "stopped" : "running"; },
+    async terminate() { terminated = true; }
+  };
+  await assert.rejects(() => withDisposableWorker(lifecycleProvider, request, async (_instance, signal) => {
+    assert.equal(signal, controller.signal);
+    controller.abort(new Error("lease lost"));
+    throw signal?.reason;
+  }, controller.signal), /lease lost/);
+  assert.equal(terminated, true);
+});
