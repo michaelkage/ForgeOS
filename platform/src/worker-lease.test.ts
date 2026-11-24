@@ -71,3 +71,21 @@ test("stops lease heartbeats only after successful completion is confirmed", asy
   assert.equal(result, "completed");
   assert.equal(calls, 1);
 });
+
+test("rejects a callback that returns after its external cancellation signal aborts", async () => {
+  const controller = new AbortController();
+  const fetchImpl: typeof fetch = async () => new Response(null, { status: 204 });
+  await assert.rejects(withWorkerLease({ ...base, fetchImpl, signal: controller.signal }, async () => {
+    controller.abort(new Error("worker host cancelled the job"));
+    return "incorrect-success";
+  }), error => error instanceof WorkerLeaseLostError && error.httpStatus === null);
+});
+
+test("does not confirm completion after external cancellation", async () => {
+  const controller = new AbortController();
+  const fetchImpl: typeof fetch = async () => new Response(null, { status: 204 });
+  await assert.rejects(withWorkerLease({ ...base, fetchImpl, signal: controller.signal }, async lease => {
+    controller.abort(new Error("worker host cancelled the job"));
+    lease.confirmCompletion();
+  }), error => error instanceof WorkerLeaseLostError && error.httpStatus === null);
+});
