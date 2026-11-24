@@ -379,7 +379,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
           lease_expires_at=now()+($3::text || ' seconds')::interval,
           attempts=attempts+1,started_at=COALESCE(started_at,now()),updated_at=now()
         FROM candidate WHERE j.id=candidate.id
-        RETURNING j.id,j.snapshot,j.snapshot_sha256,j.attempts,j.max_attempts,j.lease_token,j.lease_expires_at`,
+        RETURNING j.id,j.snapshot,j.snapshot_sha256 AS "snapshotSha256",j.attempts,j.max_attempts AS "maxAttempts",j.lease_token AS "leaseToken",j.lease_expires_at AS "leaseExpiresAt"`,
         [parsed.data.workerId, randomUUID(), parsed.data.leaseSeconds, parsed.data.architectures, parsed.data.romBases]
       );
       if (claimed.rows[0] && !verifyBuildSnapshot(claimed.rows[0].snapshot, claimed.rows[0].snapshot_sha256)) {
