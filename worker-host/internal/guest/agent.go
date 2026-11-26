@@ -7,8 +7,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +24,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -114,7 +117,7 @@ func Run(ctx context.Context,cfg Config)error{
 	if err:=os.WriteFile(snapshotPath,snapshot,0600);err!=nil{return err}
 	runCtx,cancel:=context.WithCancel(ctx);defer cancel()
 	heartbeatDone:=make(chan error,1)
-	go heartbeatLoop(runCtx,verified.API,job,heartbeatDone)
+	go heartbeatLoop(runCtx,verified.API,job,cancel,heartbeatDone)
 	cmd:=exec.CommandContext(runCtx,cfg.WorkerPath,"--snapshot",snapshotPath,"--artifact",cfg.ArtifactPath)
 	cmd.Dir=workspace
 	cmd.Env=[]string{"PATH=/usr/local/bin:/usr/bin:/bin","HOME=/root","TMPDIR=/tmp","FORGEOS_JOB_ID="+job.JobID,"FORGEOS_JOB_ATTEMPT="+strconv.Itoa(job.Attempt),"FORGEOS_WORKER_ID="+job.WorkerID,"FORGEOS_LEASE_TOKEN="+job.LeaseToken,"FORGEOS_API_BASE_URL="+verified.API.String()}
@@ -142,15 +145,15 @@ func redeem(ctx context.Context,b VerifiedBootstrap)(RedeemedJob,error){
 	return out,nil
 }
 
-func heartbeatLoop(ctx context.Context,api *url.URL,job RedeemedJob,done chan<- error){
+func heartbeatLoop(ctx context.Context,api *url.URL,job RedeemedJob,cancel context.CancelFunc,done chan<- error){
 	t:=time.NewTicker(60*time.Second);defer t.Stop()
 	for{select{case<-ctx.Done():done<-nil;return;case<-t.C:
 		body:=map[string]any{"workerId":job.WorkerID,"leaseToken":job.LeaseToken,"leaseSeconds":180}
-		if _,err:=postJSON(ctx,api,"/api/internal/build-jobs/"+job.JobID+"/heartbeat",job.LeaseToken,body,nil);err!=nil{done<-err;return}
+		if _,err:=postJSON(ctx,api,"/api/internal/build-jobs/"+job.JobID+"/heartbeat",job.LeaseToken,body,nil);err!=nil{cancel();done<-err;return}
 	}}
 }
 func uploadArtifact(ctx context.Context,api *url.URL,job RedeemedJob,path string)error{
-	f,err:=os.Open(path);if err!=nil{return err};defer f.Close()
+	stLink,err:=os.Lstat(path);if err!=nil{return err};if !stLink.Mode().IsRegular()||stLink.Mode()&os.ModeSymlink!=0{return errors.New("build artifact must be a regular non-symlink file")};f,err:=os.Open(path);if err!=nil{return err};defer f.Close()
 	st,err:=f.Stat();if err!=nil{return err};if !st.Mode().IsRegular()||st.Size()<=0||st.Size()>20*1024*1024*1024{return errors.New("build artifact size is invalid")}
 	h:=sha256.New();if _,err:=io.Copy(h,f);err!=nil{return err};digest:=hex.EncodeToString(h.Sum(nil));if _,err:=f.Seek(0,io.SeekStart);err!=nil{return err}
 	var intent struct{URL string `json:"url"`;RequiredHeaders map[string]string `json:"requiredHeaders"`}
@@ -180,7 +183,7 @@ func postJSON(ctx context.Context,api *url.URL,path,token string,body any,out an
 func canonicalRaw(raw json.RawMessage)([]byte,error){var v any;d:=json.NewDecoder(bytes.NewReader(raw));d.UseNumber();if err:=d.Decode(&v);err!=nil{return nil,err};return canonicalValue(v)}
 func newHTTPClient()*http.Client{return &http.Client{Timeout:30*time.Second,CheckRedirect:func(*http.Request,[]*http.Request)error{return errors.New("redirects are not allowed")}}}
 func workerIDValid(s string)bool{return len(s)>=3&&len(s)<=64&&regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`).MatchString(s)}
-func trustedExecutable(path string)error{st,err:=os.Lstat(path);if err!=nil{return err};if !st.Mode().IsRegular()||st.Mode()&os.ModeSymlink!=0||st.Mode().Perm()&0022!=0{return errors.New("build worker executable must be a non-writable regular file")};return nil}
+func trustedExecutable(path string)error{st,err:=os.Lstat(path);if err!=nil{return err};sys,ok:=st.Sys().(*syscall.Stat_t);if !st.Mode().IsRegular()||st.Mode()&os.ModeSymlink!=0||st.Mode().Perm()&0022!=0||!ok||sys.Uid!=0{return errors.New("build worker executable must be a root-owned, non-writable regular file")};return nil}
 func readEd25519PublicKey(path string)(ed25519.PublicKey,error){
 	b,err:=os.ReadFile(path);if err!=nil{return nil,err}
 	block,_:=pem.Decode(b);if block==nil{return nil,errors.New("host public key PEM is invalid")}
