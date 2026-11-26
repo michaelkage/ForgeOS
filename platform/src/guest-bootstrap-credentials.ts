@@ -70,7 +70,7 @@ export async function registerGuestBootstrapRoutes(app: FastifyInstance): Promis
       const inserted = await client.query<{ expires_at: Date }>(
         `INSERT INTO forgeos_guest_bootstrap_credentials
            (build_job_id,attempt,worker_id,credential_sha256,expires_at)
-         VALUES($1,$2,$3,$4,now()+interval '90 seconds')
+         VALUES($1,$2,$3,$4,now()+interval '3 minutes')
          ON CONFLICT (build_job_id,attempt) DO UPDATE
            SET worker_id=EXCLUDED.worker_id,
                credential_sha256=EXCLUDED.credential_sha256,
