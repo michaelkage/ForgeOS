@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { request as httpsRequest, Agent } from "node:https";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -14,6 +15,7 @@ const MAX_ARTIFACT_BYTES = 20 * 1024 * 1024 * 1024;
 const SIGNING_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
 export interface SignedArtifactRequest {
+  userId: string;
   jobId: string;
   attempt: number;
   snapshotSha256: string;
@@ -110,7 +112,8 @@ async function readErrorResponse(response: IncomingMessage): Promise<string> {
 }
 
 export async function signUploadedArtifact(input: SignedArtifactRequest): Promise<SignedArtifactResult> {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.jobId) ||
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.userId) ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.jobId) ||
       !Number.isInteger(input.attempt) || input.attempt < 1 || input.attempt > 20 ||
       !/^[a-f0-9]{64}$/.test(input.snapshotSha256) || !/^[a-f0-9]{64}$/.test(input.inputSha256) ||
       !Number.isSafeInteger(input.inputSizeBytes) || input.inputSizeBytes < 1 || input.inputSizeBytes > MAX_ARTIFACT_BYTES) {
@@ -155,7 +158,7 @@ export async function signUploadedArtifact(input: SignedArtifactRequest): Promis
       signed.destroy();
       throw new Error("signing_service_unavailable: signer response metadata is invalid");
     }
-    const objectKey = "builds/" + input.jobId + "/attempt-" + input.attempt + "/signed-" + sha256 + ".zip";
+    const objectKey = "artifacts/" + input.userId + "/" + input.jobId + "/" + input.attempt + "/" + randomUUID() + ".zip";
     const uploadUrl = createArtifactUploadUrl(objectKey, sizeBytes, 600);
     await uploadSignedOutput(uploadUrl, sizeBytes, signed);
     await verifyUploadedArtifact(objectKey, sizeBytes, sha256);
