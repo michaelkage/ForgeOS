@@ -6,6 +6,7 @@ import { config } from "./config.js";
 import { requireCsrf, requireUser } from "./security.js";
 import { validateRepositoryManifest } from "./manifest.js";
 import { createArtifactDownloadUrl, createArtifactUploadUrl, verifyUploadedArtifact } from "./artifact-storage.js";
+import { signUploadedArtifact } from "./signing-service.js";
 
 export const workerClaimSchema = z.object({
   workerId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/),
@@ -493,8 +494,8 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     if (!workerLeaseAuthorized(request, reply, parsed.data.leaseToken)) return;
     const artifact = parsed.data.artifact;
     try {
-      const intent = await query<{ expected_sha256: string; expected_size_bytes: string; object_key: string }>(
-        `SELECT i.expected_sha256,i.expected_size_bytes,i.object_key
+      const intent = await query<{ expected_sha256: string; expected_size_bytes: string; object_key: string; snapshot_sha256: string; attempts: number; user_id: string }>(
+        `SELECT i.expected_sha256,i.expected_size_bytes,i.object_key,j.snapshot_sha256,j.attempts,j.user_id
          FROM forgeos_artifact_upload_intents i
          JOIN forgeos_build_jobs j ON j.id=i.build_job_id
          WHERE i.build_job_id=$1 AND i.worker_id=$2 AND i.lease_token=$3
@@ -506,8 +507,17 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
       if (intent.rows[0]!.expected_sha256 !== artifact.sha256 || Number(intent.rows[0]!.expected_size_bytes) !== artifact.sizeBytes || artifact.contentType !== "application/zip") {
         return reply.code(422).send({ error: "artifact_metadata_does_not_match_upload_intent" });
       }
-      const objectKey = intent.rows[0]!.object_key;
-      await verifyUploadedArtifact(objectKey, artifact.sizeBytes, artifact.sha256);
+      const inputObjectKey = intent.rows[0]!.object_key;
+      await verifyUploadedArtifact(inputObjectKey, artifact.sizeBytes, artifact.sha256);
+      const signedArtifact = await signUploadedArtifact({
+        userId: intent.rows[0]!.user_id,
+        jobId: id.data,
+        attempt: intent.rows[0]!.attempts,
+        snapshotSha256: intent.rows[0]!.snapshot_sha256,
+        inputObjectKey,
+        inputSha256: artifact.sha256,
+        inputSizeBytes: artifact.sizeBytes
+      });
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
@@ -517,7 +527,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
             completed_at=now(),updated_at=now(),lease_token=NULL,lease_expires_at=NULL,worker_id=NULL
            WHERE id=$1 AND status='leased' AND worker_id=$2 AND lease_token=$3 AND lease_expires_at > now()
            RETURNING id,configuration_id,status,attempts,artifact_sha256,artifact_size_bytes,artifact_verified_at,completed_at`,
-          [id.data, parsed.data.workerId, parsed.data.leaseToken, objectKey, artifact.sha256, artifact.sizeBytes]
+          [id.data, parsed.data.workerId, parsed.data.leaseToken, signedArtifact.objectKey, signedArtifact.sha256, signedArtifact.sizeBytes]
         );
         if (!result.rowCount) {
           await client.query("ROLLBACK");
@@ -525,7 +535,10 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         }
         await client.query(
           "INSERT INTO forgeos_build_job_events(build_job_id,attempt,worker_id,event_type,details) VALUES($1,$2,$3,'artifact_verified',$4)",
-          [result.rows[0]!.id, result.rows[0]!.attempts, parsed.data.workerId, JSON.stringify({ sha256: artifact.sha256, sizeBytes: artifact.sizeBytes })]
+          [result.rows[0]!.id, result.rows[0]!.attempts, parsed.data.workerId, JSON.stringify({
+            inputSha256: artifact.sha256, inputSizeBytes: artifact.sizeBytes,
+            sha256: signedArtifact.sha256, sizeBytes: signedArtifact.sizeBytes, signed: true
+          })]
         );
         await client.query("UPDATE forgeos_artifact_upload_intents SET verified_at=now() WHERE build_job_id=$1 AND lease_token=$2 AND verified_at IS NULL", [id.data, parsed.data.leaseToken]);
         await client.query("UPDATE forgeos_rom_configurations SET status='validated' WHERE id=$1 AND status='queued'", [result.rows[0]!.configuration_id]);
@@ -539,6 +552,15 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
       }
     } catch (error) {
       request.log.error(error);
+      if (error instanceof Error && error.message.startsWith("artifact_signing_rejected:")) {
+        return reply.code(422).send({ error: "artifact_signing_rejected" });
+      }
+      if (error instanceof Error && error.message.startsWith("signed_artifact_verification_failed:")) {
+        return reply.code(422).send({ error: "signed_artifact_verification_failed" });
+      }
+      if (error instanceof Error && error.message.startsWith("signing_service_unavailable:")) {
+        return reply.code(503).send({ error: "artifact_signing_unavailable" });
+      }
       if (error instanceof Error && /not present|size or content type|could not be read|exceeds its declared size|SHA-256 verification/.test(error.message)) {
         return reply.code(422).send({ error: "artifact_verification_failed" });
       }
