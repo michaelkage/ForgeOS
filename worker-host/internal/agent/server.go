@@ -2,6 +2,7 @@ package agent
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -214,7 +215,7 @@ func readBounded(r io.Reader,n int64)([]byte,error){b,err:=io.ReadAll(io.LimitRe
 func writeJSON(w http.ResponseWriter,status int,v any){w.Header().Set("Content-Type","application/json");w.WriteHeader(status);_ = json.NewEncoder(w).Encode(v)}
 func writeError(w http.ResponseWriter,status int,code string){writeJSON(w,status,map[string]string{"error":code})}
 func signCanonical(key ed25519.PrivateKey,value any)(string,error){b,err:=canonicalJSON(value);if err!=nil{return "",err};return base64.StdEncoding.EncodeToString(ed25519.Sign(key,b)),nil}
-func randomUUID() string { b:=make([]byte,16);if _,err:=os.ReadFile("/dev/urandom");err==nil{f,_:=os.Open("/dev/urandom");if f!=nil{_,_=io.ReadFull(f,b);_ = f.Close()}};b[6]=(b[6]&0x0f)|0x40;b[8]=(b[8]&0x3f)|0x80;h:=fmt.Sprintf("%x",b);return h[:8]+"-"+h[8:12]+"-"+h[12:16]+"-"+h[16:20]+"-"+h[20:] }
+func randomUUID() string { b:=make([]byte,16);_,_=rand.Read(b);b[6]=(b[6]&0x0f)|0x40;b[8]=(b[8]&0x3f)|0x80;h:=fmt.Sprintf("%x",b);return h[:8]+"-"+h[8:12]+"-"+h[12:16]+"-"+h[16:20]+"-"+h[20:] }
 func canonicalJSON(v any)([]byte,error){raw,err:=json.Marshal(v);if err!=nil{return nil,err};var x any;d:=json.NewDecoder(strings.NewReader(string(raw)));d.UseNumber();if err=d.Decode(&x);err!=nil{return nil,err};return canonicalValue(x)}
 func canonicalValue(v any)([]byte,error){switch x:=v.(type){case map[string]any:
 	keys:=make([]string,0,len(x));for k:=range x{keys=append(keys,k)};sortStrings(keys);var b strings.Builder;b.WriteByte('{');for i,k:=range keys{if i>0{b.WriteByte(',')};kb,_:=json.Marshal(k);vb,e:=canonicalValue(x[k]);if e!=nil{return nil,e};b.Write(kb);b.WriteByte(':');b.Write(vb)};b.WriteByte('}');return []byte(b.String()),nil
