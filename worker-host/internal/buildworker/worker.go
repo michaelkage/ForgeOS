@@ -38,11 +38,14 @@ func Run(ctx context.Context,cfg Config)error{
 	manifestPath:=filepath.Join(workspace,".repo","manifests",filepath.FromSlash(s.Manifest.Path))
 	if err:=os.MkdirAll(filepath.Dir(manifestPath),0700);err!=nil{return err}
 	if err:=os.WriteFile(manifestPath,[]byte(s.Manifest.Content),0600);err!=nil{return err}
-	manifest,err:=pinManifest(s.Manifest.Content,s);if err!=nil{return err}
-	if err:=os.MkdirAll(filepath.Join(workspace,".repo","local_manifests"),0700);err!=nil{return err}
-	if err:=os.WriteFile(filepath.Join(workspace,".repo","local_manifests","forgeos-pinned.xml"),manifest,0600);err!=nil{return err}
+	manifest,externalSources,err:=pinManifest(s.Manifest.Content,s);if err!=nil{return err}
+	if len(manifest)>0{
+		if err:=os.MkdirAll(filepath.Join(workspace,".repo","local_manifests"),0700);err!=nil{return err}
+		if err:=os.WriteFile(filepath.Join(workspace,".repo","local_manifests","forgeos-pinned.xml"),manifest,0600);err!=nil{return err}
+	}
 	jobs:=fmt.Sprintf("%d",max(2,min(16,runtime.NumCPU())))
 	if err:=run(ctx,workspace,ctxDeadlineBudget(ctx),"/usr/local/bin/repo","sync","-c","--fail-fast","--force-sync","--no-clone-bundle","--no-tags","-j",jobs);err!=nil{return fmt.Errorf("repo sync: %w",err)}
+	if err:=checkoutExternalSources(ctx,workspace,s,externalSources);err!=nil{return fmt.Errorf("stage pinned device, kernel, and vendor sources: %w",err)}
 	target:="lineage_"+s.Device.Codename+"-userdebug"
 	script:="set -euo pipefail; source build/envsetup.sh; lunch \"$1\"; mka bacon"
 	if err:=run(ctx,workspace,ctxDeadlineBudget(ctx),"/bin/bash","-lc",script,"forgeos-build-worker",target);err!=nil{return fmt.Errorf("Android ROM build: %w",err)}
