@@ -66,6 +66,7 @@ func NewScheduler(server *Server,cfg SchedulerConfig,workerToken string)(*Schedu
 	if err:=validateResources(cfg.Resources);err!=nil{return nil,err}
 	if lr,ok:=server.cfg.Runtime.(*LinuxRuntime);ok{
 		if lr.cfg.WorkerID!=cfg.WorkerID{return nil,errors.New("scheduler worker ID must match the host runtime worker ID")}
+		if strings.TrimRight(lr.cfg.BootstrapAPIBaseURL,"/")!=strings.TrimRight(cfg.PlatformAPIBaseURL,"/"){return nil,errors.New("scheduler and guest bootstrap API origins must match")}
 		if _,ok:=lr.cfg.EgressPolicies[cfg.EgressPolicyID];!ok{return nil,errors.New("scheduler egress policy is not installed on the host")}
 		for _,arch:=range cfg.Architectures{digest:=cfg.ImageDigests[arch];if _,ok:=lr.cfg.ImagePaths[digest];!ok{return nil,fmt.Errorf("worker image %s is not installed on the host",digest)};if _,ok:=lr.cfg.KernelPaths[arch];!ok{return nil,fmt.Errorf("kernel for %s is not installed on the host",arch)}}
 	}
