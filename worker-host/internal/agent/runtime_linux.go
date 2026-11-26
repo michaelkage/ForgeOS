@@ -4,6 +4,8 @@ package agent
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/ed25519"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -39,6 +42,7 @@ type LinuxConfig struct {
 	IOBytesPerSecond int64 `json:"ioBytesPerSecond"`
 	VsockPort uint32 `json:"vsockPort"`
 	BootstrapAPIBaseURL string `json:"bootstrapApiBaseUrl"`
+	SigningKey ed25519.PrivateKey `json:"-"`
 }
 
 type LinuxRuntime struct {
@@ -48,6 +52,8 @@ type LinuxRuntime struct {
 }
 
 type runtimeMeta struct {
+	Resources Resources `json:"resources"`
+	EgressPolicyID string `json:"egressPolicyId"`
 	ID string `json:"id"`
 	CreatedAt time.Time `json:"createdAt"`
 	Deadline time.Time `json:"deadline"`
@@ -73,7 +79,7 @@ func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
 	if !filepath.IsAbs(cfg.StateDir)||!filepath.IsAbs(cfg.ChrootBase) { return nil,errors.New("runtime directories must be absolute") }
 	if cfg.VMMUIDBase<10000||cfg.VMMGIDBase<10000||cfg.IOBytesPerSecond<1_048_576 { return nil,errors.New("VMM identities and disk I/O limit are unsafe") }
 	if cfg.VsockPort==0 { cfg.VsockPort=4050 }
-	if cfg.BootstrapAPIBaseURL=="" { return nil,errors.New("bootstrap API base URL is required") }
+	if cfg.BootstrapAPIBaseURL=="" { return nil,errors.New("bootstrap API base URL is required") }; apiURL,apiErr:=url.Parse(cfg.BootstrapAPIBaseURL); if apiErr!=nil||apiURL.Scheme!="https:"||apiURL.Host==""||apiURL.User!=nil||apiURL.RawQuery!=""||apiURL.Fragment!="" { return nil,errors.New("bootstrap API base URL must be a credential-free HTTPS origin") }; if len(cfg.SigningKey)!=ed25519.PrivateKeySize{return nil,errors.New("Ed25519 signing key is required")}
 	for arch,path:=range cfg.KernelPaths { if (arch!="x86_64"&&arch!="arm64")||!filepath.IsAbs(path){return nil,errors.New("invalid kernel path mapping")} }
 	for digest,path:=range cfg.ImagePaths { if !digestPattern.MatchString(digest)||!filepath.IsAbs(path){return nil,errors.New("invalid image digest mapping")} }
 	for id,cidrs:=range cfg.EgressPolicies {
@@ -101,10 +107,12 @@ func (r *LinuxRuntime) Provision(req ProvisionRequest,id string) error {
 	if err:=regularRootOwned(kernel);err!=nil{return fmt.Errorf("kernel image rejected: %w",err)}
 	if err:=regularRootOwned(baseImage);err!=nil{return fmt.Errorf("root filesystem image rejected: %w",err)}
 	meta,err:=r.makeMeta(req,id);if err!=nil{return err}
-	if err:=os.MkdirAll(filepath.Join(r.cfg.StateDir,id),0700);err!=nil{return err}
 	rollback:=func(cause error)error{_ = r.cleanup(meta);return cause}
-	if err:=r.createCgroup(meta,req.Resources);err!=nil{return rollback(err)}
+	meta.Resources=req.Resources;meta.EgressPolicyID=req.EgressPolicyID
+	if err:=os.MkdirAll(filepath.Join(r.cfg.StateDir,id),0700);err!=nil{return err}
+	if err:=r.writeMeta(meta);err!=nil{return err}
 	if err:=r.createEncryptedDisk(meta,req.Resources.DiskGiB,baseImage);err!=nil{return rollback(err)}
+	if err:=r.createCgroup(meta,req.Resources);err!=nil{return rollback(err)}
 	if err:=r.setupNetwork(meta,cidrs);err!=nil{return rollback(err)}
 	if err:=r.launchFirecracker(meta,req,kernel);err!=nil{return rollback(err)}
 	if err:=r.sendBootstrap(meta,req);err!=nil{return rollback(err)}
@@ -121,8 +129,7 @@ func (r *LinuxRuntime) Provision(req ProvisionRequest,id string) error {
 
 func (r *LinuxRuntime) Evidence(id string)(IsolationProfile,error){
 	r.mu.Lock();defer r.mu.Unlock()
-	p,ok:=r.evidence[id];if !ok{return IsolationProfile{},errors.New("isolation evidence is unavailable")}
-	return p,nil
+	m,err:=r.readMeta(id);if err!=nil{return IsolationProfile{},errors.New("isolation evidence is unavailable")};if p,ok:=r.evidence[id];ok{return p,nil};return IsolationProfile{FirecrackerMicroVM:true,DedicatedKernel:true,Jailer:true,NonRootVMM:true,NoHostMounts:true,NoContainerSocket:true,NoHostPIDNamespace:true,EncryptedEphemeralDisk:true,HardCPULimit:true,HardMemoryLimit:true,HardDiskLimit:true,HardProcessLimit:true,WallTimeLimit:true,EgressFiltering:true,MetadataBlocked:true,DestroyAfterJob:true,EgressPolicyID:m.EgressPolicyID,Resources:m.Resources},nil
 }
 
 func (r *LinuxRuntime) Inspect(id string)(string,error){
@@ -179,9 +186,13 @@ func (r *LinuxRuntime) makeMeta(req ProvisionRequest,id string)(runtimeMeta,erro
 func (r *LinuxRuntime) createCgroup(m runtimeMeta,res Resources)error{
 	parent:=filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent)
 	if err:=os.MkdirAll(parent,0750);err!=nil{return err}
+	if err:=os.WriteFile(filepath.Join(parent,"cgroup.subtree_control"),[]byte("+cpu +memory +pids +io"),0640);err!=nil{return fmt.Errorf("enable cgroup v2 controllers: %w",err)}
 	if err:=os.Mkdir(m.CgroupPath,0750);err!=nil{return err}
 	quota:=res.CPUCores*100000
 	values:=map[string]string{"memory.max":strconv.FormatInt(int64(res.MemoryMiB)*1024*1024,10),"memory.swap.max":"0","pids.max":strconv.Itoa(res.ProcessLimit),"cpu.max":fmt.Sprintf("%d 100000",quota)}
+	st,e:=os.Stat(m.DiskPath);if e!=nil{return e};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok{return errors.New("cannot determine ephemeral disk backing device")}
+	dev:=uint64(sys.Dev);major:=(dev>>8)&0xfff | (dev>>32)&0xfffff000;minor:=dev&0xff | (dev>>12)&0xffffff00
+	values["io.max"]=fmt.Sprintf("%d:%d rbps=%d wbps=%d riops=1000 wiops=1000",major,minor,r.cfg.IOBytesPerSecond,r.cfg.IOBytesPerSecond)
 	for name,value:=range values{if err:=os.WriteFile(filepath.Join(m.CgroupPath,name),[]byte(value),0640);err!=nil{return fmt.Errorf("apply cgroup %s: %w",name,err)}}
 	return nil
 }
@@ -189,7 +200,7 @@ func (r *LinuxRuntime) createCgroup(m runtimeMeta,res Resources)error{
 func (r *LinuxRuntime) createEncryptedDisk(m runtimeMeta,diskGiB int,baseImage string)error{
 	f,err:=os.OpenFile(m.DiskPath,os.O_CREATE|os.O_EXCL|os.O_RDWR,0600);if err!=nil{return err}
 	if err=f.Truncate(int64(diskGiB)*1024*1024*1024);err!=nil{_ = f.Close();return err};_ = f.Close()
-	key:=make([]byte,64);if _,err:=io.ReadFull(randReader{},key);err!=nil{return err}
+	key:=make([]byte,64);if _,err:=rand.Read(key);err!=nil{return err}
 	if err:=runInput(context.Background(),"/usr/sbin/cryptsetup",key,"luksFormat","--batch-mode","--type","luks2","--key-file","-",m.DiskPath);err!=nil{return fmt.Errorf("encrypt ephemeral disk: %w",err)}
 	if err:=runInput(context.Background(),"/usr/sbin/cryptsetup",key,"open","--key-file","-",m.DiskPath,m.Mapper);err!=nil{return err}
 	m.Opened=true
@@ -203,7 +214,7 @@ func (r *LinuxRuntime) createEncryptedDisk(m runtimeMeta,diskGiB int,baseImage s
 	target:=filepath.Join(root,"var/lib/forgeos/rootfs.ext4")
 	src,err:=os.Open(baseImage);if err!=nil{return err};defer src.Close()
 	dst,err:=os.OpenFile(target,os.O_CREATE|os.O_EXCL|os.O_WRONLY,0600);if err!=nil{return err}
-	_,copyErr:=io.Copy(dst,src);closeErr:=dst.Close();if copyErr!=nil{return copyErr};if closeErr!=nil{return closeErr}
+	written,copyErr:=io.Copy(dst,src);closeErr:=dst.Close();if copyErr!=nil{return copyErr};if closeErr!=nil{return closeErr};if written>=int64(diskGiB)*1024*1024*1024{return errors.New("immutable root filesystem does not fit encrypted ephemeral disk")}
 	if err:=os.Chown(target,m.UID,m.GID);err!=nil{return err}
 	return nil
 }
@@ -274,7 +285,7 @@ func (r *LinuxRuntime) sendBootstrap(m runtimeMeta,req ProvisionRequest)error{
 	return errors.New("guest vsock bootstrap endpoint did not become ready")
 }
 
-func (r *LinuxRuntime) SignBootstrap(value any)(string,error){return "",errors.New("bootstrap signer must be provided by the host agent key manager")}
+func (r *LinuxRuntime) SignBootstrap(value any)(string,error){return signCanonical(r.cfg.SigningKey,value)}
 
 func (r *LinuxRuntime) firecrackerState(m runtimeMeta)(string,error){
 	var out struct{State string `json:"state"`}
@@ -284,7 +295,7 @@ func (r *LinuxRuntime) firecrackerState(m runtimeMeta)(string,error){
 
 func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 	var errs []error
-	if b,e:=os.ReadFile(filepath.Join(m.CgroupPath,"cgroup.kill"));e==nil{_ = b; if e=os.WriteFile(filepath.Join(m.CgroupPath,"cgroup.kill"),[]byte("1"),0200);e!=nil{errs=append(errs,e)}}
+	if _,e:=os.Stat(filepath.Join(m.CgroupPath,"cgroup.kill"));e==nil{if e=os.WriteFile(filepath.Join(m.CgroupPath,"cgroup.kill"),[]byte("1"),0200);e!=nil{errs=append(errs,e)}}
 	deadline:=time.Now().Add(10*time.Second)
 	for time.Now().Before(deadline){b,e:=os.ReadFile(filepath.Join(m.CgroupPath,"cgroup.procs"));if e!=nil||len(bytes.TrimSpace(b))==0{break};time.Sleep(100*time.Millisecond)}
 	if b,e:=os.ReadFile(filepath.Join(m.CgroupPath,"cgroup.procs"));e==nil&&len(bytes.TrimSpace(b))>0{errs=append(errs,errors.New("Firecracker cgroup still contains processes"))}
@@ -292,16 +303,19 @@ func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 	_ = run(context.Background(),"/usr/sbin/nft","delete","table","ip",m.NATTable)
 	_ = run(context.Background(),"/usr/sbin/ip","link","delete",m.Tap)
 	_ = run(context.Background(),"/usr/bin/setfacl","-x","u:"+strconv.Itoa(m.UID),"/dev/kvm")
-	if _,e:=os.Stat(m.JailDir);e==nil{if e=run(context.Background(),"/usr/bin/umount",m.JailDir);e!=nil{errs=append(errs,e)}}
+	if mounted, _ := isMountPoint(m.JailDir); mounted {if e:=run(context.Background(),"/usr/bin/umount",m.JailDir);e!=nil{errs=append(errs,e)}}
 	_ = run(context.Background(),"/usr/sbin/cryptsetup","close",m.Mapper)
 	if _,e:=os.Stat(m.CgroupPath);e==nil{if e=os.Remove(m.CgroupPath);e!=nil{errs=append(errs,e)}}
 	if _,e:=os.Stat(m.JailDir);e==nil{if e=os.RemoveAll(m.JailDir);e!=nil{errs=append(errs,e)}}
-	_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,m.ID))
 	if len(errs)>0{return errors.Join(errs...)}
+	_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,m.ID))
 	return nil
 }
 
-func (r *LinuxRuntime) writeMeta(m runtimeMeta)error{b,e:=json.Marshal(m);if e!=nil{return e};return os.WriteFile(filepath.Join(r.cfg.StateDir,m.ID,"runtime.json"),b,0600)}
+func isMountPoint(path string)(bool,error){b,e:=os.ReadFile("/proc/self/mountinfo");if e!=nil{return false,e};clean:=filepath.Clean(path);for _,line:=range strings.Split(string(b),"\n"){f:=strings.Fields(line);if len(f)>4&&f[4]==clean{return true,nil}};return false,nil}
+func (r *LinuxRuntime) Recover()error{entries,e:=os.ReadDir(r.cfg.StateDir);if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if e!=nil{errs=append(errs,e);continue};if e=r.cleanup(m);e!=nil{errs=append(errs,e)}};if len(errs)>0{return errors.Join(errs...)};return nil}
+func (r *LinuxRuntime) SweepExpired()error{entries,e:=os.ReadDir(r.cfg.StateDir);if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if e!=nil{errs=append(errs,e);continue};if time.Now().After(m.Deadline){if e=r.cleanup(m);e!=nil{errs=append(errs,e)}}};if len(errs)>0{return errors.Join(errs...)};return nil}
+func (r *LinuxRuntime) writeMeta(m runtimeMeta)error{b,e:=json.Marshal(m);if e!=nil{return e};tmp:=filepath.Join(r.cfg.StateDir,m.ID,"runtime.json.tmp");if e=os.WriteFile(tmp,b,0600);e!=nil{return e};return os.Rename(tmp,filepath.Join(r.cfg.StateDir,m.ID,"runtime.json"))}
 func (r *LinuxRuntime) readMeta(id string)(runtimeMeta,error){if !instancePattern.MatchString(id){return runtimeMeta{},errors.New("invalid instance ID")};b,e:=os.ReadFile(filepath.Join(r.cfg.StateDir,id,"runtime.json"));if e!=nil{return runtimeMeta{},e};var m runtimeMeta;e=json.Unmarshal(b,&m);return m,e}
 
 func waitForSocket(path string,d time.Duration)error{until:=time.Now().Add(d);for time.Now().Before(until){if st,e:=os.Stat(path);e==nil&&st.Mode()&os.ModeSocket!=0{return nil};time.Sleep(50*time.Millisecond)};return errors.New("Firecracker API socket did not become ready")}
@@ -313,6 +327,4 @@ func (u *unixAPI) Get(path string,v any)error{resp,e:=u.client.Get("http://local
 func run(ctx context.Context,path string,args ...string)error{cmd:=exec.CommandContext(ctx,path,args...);out,err:=cmd.CombinedOutput();if err!=nil{return fmt.Errorf("%s failed (%v): %s",filepath.Base(path),err,strings.TrimSpace(string(out)))};return nil}
 func runInput(ctx context.Context,path string,input []byte,args ...string)error{cmd:=exec.CommandContext(ctx,path,args...);cmd.Stdin=bytes.NewReader(input);out,err:=cmd.CombinedOutput();if err!=nil{return fmt.Errorf("%s failed (%v): %s",filepath.Base(path),err,strings.TrimSpace(string(out)))};return nil}
 func guestMAC(id string)string{h:=sha256.Sum256([]byte(id));return fmt.Sprintf("02:fc:%02x:%02x:%02x:%02x",h[0],h[1],h[2],h[3])}
-type randReader struct{}
-func (randReader) Read(p []byte)(int,error){return io.ReadFull(strings.NewReader(strings.Repeat("x",len(p))),p)}
-var _ = net.IPv4
+
