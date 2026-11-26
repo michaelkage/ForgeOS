@@ -62,7 +62,7 @@ func NewScheduler(server *Server,cfg SchedulerConfig,workerToken string)(*Schedu
 	for _,b:=range cfg.ROMBases{if b!="lineage"&&b!="crdroid"{return nil,fmt.Errorf("unsupported scheduler ROM base %s",b)}}
 	if cfg.LeaseSeconds==0{cfg.LeaseSeconds=180};if cfg.LeaseSeconds<30||cfg.LeaseSeconds>900{return nil,errors.New("scheduler lease must be between 30 and 900 seconds")}
 	if cfg.PollIntervalSeconds==0{cfg.PollIntervalSeconds=5};if cfg.PollIntervalSeconds<1||cfg.PollIntervalSeconds>60{return nil,errors.New("scheduler poll interval must be between 1 and 60 seconds")}
-	if cfg.MaxConcurrent==0{cfg.MaxConcurrent=1};if cfg.MaxConcurrent<1||cfg.MaxConcurrent>32{return nil,errors.New("scheduler concurrency must be between 1 and 32")}
+	if cfg.MaxConcurrent==0{cfg.MaxConcurrent=1};if cfg.MaxConcurrent!=1{return nil,errors.New("this host runtime serializes VM lifecycle operations; maxConcurrent must be exactly 1")}
 	if err:=validateResources(cfg.Resources);err!=nil{return nil,err}
 	if lr,ok:=server.cfg.Runtime.(*LinuxRuntime);ok{
 		if lr.cfg.WorkerID!=cfg.WorkerID{return nil,errors.New("scheduler worker ID must match the host runtime worker ID")}
