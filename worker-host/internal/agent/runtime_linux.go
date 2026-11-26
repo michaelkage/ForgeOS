@@ -497,14 +497,11 @@ func (r *LinuxRuntime) SweepExpired()error{
 	r.mu.Lock();defer r.mu.Unlock()
 	if err:=verifyHostHardening();err!=nil{return r.terminateAllForHostDrift(err)}
 	if err:=r.moveKvmPitThreads();err!=nil{return r.terminateAllForHostDrift(err)}
-	entries,_:=os.ReadDir(r.cfg.StateDir);
-	_ = entries
-	if false { entries,_:=os.ReadDir(r.cfg.StateDir)
-		for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};if m,e:=r.readMeta(entry.Name());e==nil{m.Phase="terminating";r.terminating[m.ID]=true;_ = r.writeMeta(m);_ = r.cleanup(m)}}
-		return errors.New("unreachable")
-	}
 	entries,e:=os.ReadDir(r.cfg.StateDir);if os.IsNotExist(e){return nil};if e!=nil{return e};var errs []error
-	for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if os.IsNotExist(e){_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,entry.Name()));continue};if e!=nil{errs=append(errs,e);continue};if m.Phase=="running"&&!r.terminating[m.ID]&&!time.Now().After(m.Deadline){
+	for _,entry:=range entries{
+		if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue}
+		m,e:=r.readMeta(entry.Name());if os.IsNotExist(e){_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,entry.Name()));continue};if e!=nil{errs=append(errs,e);continue}
+		if m.Phase=="running"&&!r.terminating[m.ID]&&!time.Now().After(m.Deadline){
 			if time.Since(r.verifiedAt[m.ID])>=5*time.Second{
 				verifyErr:=r.verifyFirecrackerInCgroup(m);if verifyErr==nil{verifyErr=r.verifyCgroupLimits(m)};if verifyErr==nil{verifyErr=r.verifyNetworkIsolation(m)}
 				if verifyErr!=nil{m.Phase="terminating";r.terminating[m.ID]=true;_ = r.writeMeta(m);if e=r.cleanup(m);e!=nil{errs=append(errs,e)};errs=append(errs,fmt.Errorf("VM %s isolation drift: %w",m.ID,verifyErr));continue}
@@ -512,7 +509,8 @@ func (r *LinuxRuntime) SweepExpired()error{
 			}
 			continue
 		}
-		m.Phase="terminating";r.terminating[m.ID]=true;_ = r.writeMeta(m);if e=r.cleanup(m);e!=nil{errs=append(errs,e)}}
+		m.Phase="terminating";r.terminating[m.ID]=true;_ = r.writeMeta(m);if e=r.cleanup(m);e!=nil{errs=append(errs,e)}
+	}
 	if len(errs)>0{return errors.Join(errs...)};return nil
 }
 func verifyImageDigest(path,digest string)error{f,e:=os.Open(path);if e!=nil{return e};defer f.Close();h:=sha256.New();if _,e=io.Copy(h,f);e!=nil{return e};if "sha256:"+hex.EncodeToString(h.Sum(nil))!=digest{return errors.New("worker image bytes do not match the requested immutable SHA-256 digest")};return nil}
