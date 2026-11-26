@@ -54,6 +54,7 @@ type LinuxRuntime struct {
 	cfg LinuxConfig
 	mu sync.Mutex
 	evidence map[string]IsolationProfile
+	terminating map[string]bool
 }
 
 type runtimeMeta struct {
@@ -129,7 +130,8 @@ func (r *LinuxRuntime) Provision(req ProvisionRequest,id string) error {
 	if err:=regularRootOwned(kernel);err!=nil{return fmt.Errorf("kernel image rejected: %w",err)}
 	if err:=regularRootOwned(baseImage);err!=nil{return fmt.Errorf("root filesystem image rejected: %w",err)}
 	meta,err:=r.makeMeta(req,id);if err!=nil{return err}
-	rollback:=func(cause error)error{_ = r.cleanup(meta);return cause}
+	meta.Phase="provisioning"
+	rollback:=func(cause error)error{meta.Phase="terminating";r.terminating[id]=true;_ = r.writeMeta(meta);cleanupErr:=r.cleanup(meta);return errors.Join(cause,cleanupErr)}
 	meta.Resources=req.Resources;meta.EgressPolicyID=req.EgressPolicyID
 	if err:=os.MkdirAll(filepath.Join(r.cfg.StateDir,id),0700);err!=nil{return err}
 	if err:=r.writeMeta(meta);err!=nil{_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,id));return err}
@@ -139,7 +141,7 @@ func (r *LinuxRuntime) Provision(req ProvisionRequest,id string) error {
 	if err:=r.launchFirecracker(meta,req,kernel);err!=nil{return rollback(err)}
 	pid,err:=r.findFirecrackerPID(meta);if err!=nil{return rollback(err)};meta.FirecrackerPID=pid;if err:=r.writeMeta(meta);err!=nil{return rollback(err)}
 	if err:=r.sendBootstrap(meta,req);err!=nil{return rollback(err)}
-	if err:=r.writeMeta(meta);err!=nil{return rollback(err)}
+	meta.Phase="running";if err:=r.writeMeta(meta);err!=nil{return rollback(err)}
 	profile:=IsolationProfile{
 		FirecrackerMicroVM:true,DedicatedKernel:true,Jailer:true,NonRootVMM:true,NoHostMounts:true,
 		NoContainerSocket:true,NoHostPIDNamespace:true,EncryptedEphemeralDisk:true,HardCPULimit:true,
@@ -158,7 +160,8 @@ func (r *LinuxRuntime) Evidence(id string)(IsolationProfile,error){
 func (r *LinuxRuntime) Inspect(id string)(string,error){
 	r.mu.Lock();defer r.mu.Unlock()
 	meta,err:=r.readMeta(id);if err!=nil { if os.IsNotExist(err){return "stopped",nil};return "unknown",err }
-	if time.Now().After(meta.Deadline){if err:=r.cleanup(meta);err!=nil{return "unknown",err};return "stopped",nil}
+	if meta.Phase!="running"||r.terminating[id]{return "unknown",nil}
+	if time.Now().After(meta.Deadline){meta.Phase="terminating";r.terminating[id]=true;_ = r.writeMeta(meta);if err:=r.cleanup(meta);err!=nil{return "unknown",err};return "stopped",nil}
 	procs,err:=os.ReadFile(filepath.Join(meta.CgroupPath,"cgroup.procs"));if err!=nil{return "unknown",err}
 	if len(bytes.TrimSpace(procs))==0{if err:=r.cleanup(meta);err!=nil{return "unknown",err};return "stopped",nil}
 	state,err:=r.firecrackerState(meta);if err!=nil{return "unknown",nil}
@@ -169,8 +172,8 @@ func (r *LinuxRuntime) Inspect(id string)(string,error){
 func (r *LinuxRuntime) Terminate(id string)error{
 	r.mu.Lock();defer r.mu.Unlock()
 	meta,err:=r.readMeta(id);if err!=nil {if os.IsNotExist(err){return nil};return err}
+	meta.Phase="terminating";r.terminating[id]=true;if err:=r.writeMeta(meta);err!=nil{return errors.Join(err,r.cleanup(meta))}
 	if err:=r.cleanup(meta);err!=nil{return err}
-	delete(r.evidence,id)
 	return nil
 }
 
