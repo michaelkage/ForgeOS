@@ -133,13 +133,13 @@ func Run(ctx context.Context,cfg Config)error{
 	if err:=cmd.Run();err!=nil{
 		cancel()
 		_ = reportFailure(context.Background(),verified.API,job,"worker_execution_failed","The isolated build worker exited unsuccessfully.")
-		return fmt.Errorf("isolated build worker failed: %w",err)
+		return powerOffGuest()
 	}
-	select{case err:=<-heartbeatDone:if err!=nil{return errors.New("build worker lease heartbeat was lost")};default:}
+	select{case err:=<-heartbeatDone:if err!=nil{_ = reportFailure(context.Background(),verified.API,job,"worker_lease_lost","The build worker lease heartbeat was lost.");return powerOffGuest()};default:}
 	cancel()
 	if err:=uploadArtifact(ctx,verified.API,job,cfg.ArtifactPath);err!=nil{
 		_ = reportFailure(context.Background(),verified.API,job,"artifact_upload_failed","The build artifact could not be uploaded and verified.")
-		return err
+		return powerOffGuest()
 	}
 	return powerOffGuest()
 }
