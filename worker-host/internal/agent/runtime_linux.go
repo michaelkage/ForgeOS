@@ -179,6 +179,7 @@ func (r *LinuxRuntime) preflight()error{
 	if err:=syscall.Statfs("/sys/fs/cgroup",&fs);err!=nil{return err}
 	if uint64(fs.Type)!=0x63677270{return errors.New("cgroup v2 is required")}
 	if err:=verifyHostHardening();err!=nil{return err}
+	if err:=os.MkdirAll("/run/netns",0755);err!=nil{return err};if err:=verifyRootPath("/run/netns");err!=nil{return err};if err:=verifyNetworkPools();err!=nil{return err}
 	if err:=verifyRootPath(filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent));err!=nil{return fmt.Errorf("unsafe delegated cgroup path: %w",err)}
 	controllers,err:=os.ReadFile(filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent,"cgroup.controllers"));if err!=nil{return fmt.Errorf("cgroup parent is not delegated: %w",err)}
 	for _,c:=range []string{"cpu","memory","pids","io"}{if !strings.Contains(" "+string(controllers)+" "," "+c+" "){return fmt.Errorf("cgroup v2 controller %s is unavailable",c)}}
@@ -393,6 +394,13 @@ func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 	delete(r.evidence,m.ID)
 	return nil
 }
+func verifyNetworkPools()error{
+	out,err:=runOutput("/usr/sbin/ip","-4","route","show","table","all");if err!=nil{return fmt.Errorf("inspect host IPv4 routes: %w",err)}
+	pools:=[]netip.Prefix{netip.MustParsePrefix("10.252.0.0/16"),netip.MustParsePrefix("10.253.0.0/16")}
+	for _,line:=range strings.Split(string(out),"\n"){for _,token:=range strings.Fields(line){if p,e:=netip.ParsePrefix(token);e==nil{for _,pool:=range pools{if p.Contains(pool.Addr())||pool.Contains(p.Addr()){return fmt.Errorf("host route %s overlaps reserved Firecracker network pool %s",p,pool)}}};if a,e:=netip.ParseAddr(token);e==nil{for _,pool:=range pools{if pool.Contains(a){return fmt.Errorf("host address %s overlaps reserved Firecracker network pool %s",a,pool)}}}}}
+	return nil
+}
+
 func verifyHostHardening()error{
 	swaps,err:=os.ReadFile("/proc/swaps");if err!=nil{return err};if len(strings.Fields(string(swaps)))>5{return errors.New("host swap must be disabled before running untrusted microVMs")}
 	if b,err:=os.ReadFile("/sys/kernel/mm/ksm/run");err==nil&&strings.TrimSpace(string(b))!="0"{return errors.New("kernel same-page merging must be disabled")}
