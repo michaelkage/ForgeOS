@@ -33,9 +33,11 @@ func TestVerifyEnvelopeAcceptsValidSignedBootstrap(t *testing.T){
 func TestVerifyEnvelopeRejectsTampering(t *testing.T){
 	pub,priv,_:=ed25519.GenerateKey(rand.Reader);now:=time.Now().UTC();p:=validPayload(now)
 	raw:=signedEnvelope(t,priv,p)
-	p.BootstrapCredential="BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
-	if _,err:=VerifyEnvelope(signedEnvelope(t,priv,p),pub,now);err==nil{t.Fatal("expected invalid signature")}
-	_ = raw
+	var env Envelope
+	if err:=json.Unmarshal(raw,&env);err!=nil{t.Fatal(err)}
+	env.Payload.BootstrapCredential="BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+	tampered,err:=json.Marshal(env);if err!=nil{t.Fatal(err)}
+	if _,err:=VerifyEnvelope(tampered,pub,now);err==nil{t.Fatal("expected invalid signature")}
 }
 
 func TestVerifyEnvelopeRejectsExpiredAndNonHTTPSPayloads(t *testing.T){
