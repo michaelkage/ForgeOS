@@ -53,10 +53,14 @@ func Run(ctx context.Context,cfg Config)error{
 	lockfile,err:=captureSourceLockfile(ctx,workspace,s,externalSources)
 	if err!=nil{return fmt.Errorf("capture immutable Android source revisions: %w",err)}
 	lockfileBytes,err:=json.Marshal(lockfile);if err!=nil{return err}
-	if err:=os.WriteFile(filepath.Join(workspace,"source-lockfile.json"),lockfileBytes,0400);err!=nil{return err}
 	target:="lineage_"+s.Device.Codename+"-userdebug"
 	script:="set -euo pipefail; source build/envsetup.sh; lunch \"$1\"; mka bacon"
 	if err:=run(ctx,workspace,ctxDeadlineBudget(ctx),"/bin/bash","-lc",script,"forgeos-build-worker",target);err!=nil{return fmt.Errorf("Android ROM build: %w",err)}
+	finalLockfile,err:=captureSourceLockfile(ctx,workspace,s,externalSources)
+	if err!=nil{return fmt.Errorf("verify Android source revisions after build: %w",err)}
+	finalLockfileBytes,err:=json.Marshal(finalLockfile);if err!=nil{return err}
+	if !bytes.Equal(lockfileBytes,finalLockfileBytes){return errors.New("Android source revisions changed during the build")}
+	if err:=os.WriteFile(filepath.Join(workspace,"source-lockfile.json"),finalLockfileBytes,0400);err!=nil{return err}
 	outputDir:=filepath.Join(workspace,"out","target","product",s.Device.Codename)
 	entries,err:=os.ReadDir(outputDir);if err!=nil{return fmt.Errorf("read Android output directory: %w",err)}
 	var candidates []string
