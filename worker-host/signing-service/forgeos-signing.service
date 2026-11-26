@@ -1,0 +1,43 @@
+[Unit]
+Description=ForgeOS isolated Android OTA signing service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=forgeos-signing
+Group=forgeos-signing
+UMask=0077
+EnvironmentFile=/etc/forgeos-signing/signing.env
+ExecStart=/usr/local/sbin/forgeos-signing-service
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=4096
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+ReadOnlyPaths=/etc/forgeos-signing /opt/forgeos-signing /usr/lib/jvm
+ReadWritePaths=/var/lib/forgeos-signing
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+IPAddressAllow=10.0.0.5/32
+IPAddressAllow=127.0.0.1
+
+[Install]
+WantedBy=multi-user.target
