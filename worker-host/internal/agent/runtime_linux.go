@@ -514,9 +514,12 @@ func isMountPoint(path string)(bool,error){b,e:=os.ReadFile("/proc/self/mountinf
 func (r *LinuxRuntime) Recover()error{r.mu.Lock();defer r.mu.Unlock();entries,e:=os.ReadDir(r.cfg.StateDir);if os.IsNotExist(e){return nil};if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if os.IsNotExist(e){_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,entry.Name()));continue};if e!=nil{errs=append(errs,e);continue};if e=r.cleanup(m);e!=nil{errs=append(errs,e)}};if len(errs)>0{return errors.Join(errs...)};return nil}
 func (r *LinuxRuntime) SweepExpired()error{
 	r.mu.Lock();defer r.mu.Unlock()
+	entries,e:=os.ReadDir(r.cfg.StateDir);if os.IsNotExist(e){return nil};if e!=nil{return e}
+	hasVM:=false;for _,entry:=range entries{if entry.IsDir()&&instancePattern.MatchString(entry.Name()){hasVM=true;break}}
+	if !hasVM{return nil}
 	if err:=verifyHostHardening();err!=nil{return r.terminateAllForHostDrift(err)}
 	if err:=r.moveKvmPitThreads();err!=nil{return r.terminateAllForHostDrift(err)}
-	entries,e:=os.ReadDir(r.cfg.StateDir);if os.IsNotExist(e){return nil};if e!=nil{return e};var errs []error
+	var errs []error
 	for _,entry:=range entries{
 		if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue}
 		m,e:=r.readMeta(entry.Name());if os.IsNotExist(e){_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,entry.Name()));continue};if e!=nil{errs=append(errs,e);continue}
