@@ -57,3 +57,29 @@ func TestHostAgentRejectsMissingServiceCredential(t *testing.T){
 
 func base64Decode(s string)([]byte,error){return base64.StdEncoding.DecodeString(s)}
 var _=time.Second
+
+func localProvisionRequest()ProvisionRequest{return ProvisionRequest{RequestID:"123e4567-e89b-42d3-a456-426614174101",JobID:"123e4567-e89b-42d3-a456-426614174100",WorkerID:"worker-host-1",Attempt:1,Architecture:"x86_64",ROMBase:"lineage",ImageDigest:"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",Resources:Resources{CPUCores:2,MemoryMiB:4096,DiskGiB:64,ProcessLimit:512,WallTimeSeconds:600},EgressPolicyID:"test-egress",BootstrapCredential:"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}
+
+func TestTerminateLocalRemovesPersistedInstanceAndRequest(t *testing.T){
+	_,priv,err:=ed25519.GenerateKey(rand.Reader);if err!=nil{t.Fatal(err)}
+	stateDir:=filepath.Join(t.TempDir(),"state");rt:=&fakeRuntime{states:map[string]string{},profiles:map[string]IsolationProfile{}}
+	s,err:=NewServer(Config{BearerToken:"01234567890123456789012345678901",SigningKey:priv,StateDir:stateDir,Runtime:rt});if err!=nil{t.Fatal(err)}
+	instance,err:=s.ProvisionLocal(localProvisionRequest());if err!=nil{t.Fatal(err)}
+	if err:=s.TerminateLocal(instance.InstanceID);err!=nil{t.Fatal(err)}
+	if len(s.instances)!=0||len(s.requests)!=0{t.Fatal("confirmed teardown left a persisted instance or idempotency record")}
+	data,err:=os.ReadFile(filepath.Join(stateDir,"instances.json"));if err!=nil{t.Fatal(err)}
+	var records []storedInstance;if err:=json.Unmarshal(data,&records);err!=nil{t.Fatal(err)}
+	if len(records)!=0{t.Fatalf("expected empty persisted state, got %d records",len(records))}
+}
+
+func TestReconcileRecoveredInstancesRemovesStaleRecords(t *testing.T){
+	_,priv,err:=ed25519.GenerateKey(rand.Reader);if err!=nil{t.Fatal(err)}
+	stateDir:=filepath.Join(t.TempDir(),"state");rt:=&fakeRuntime{states:map[string]string{},profiles:map[string]IsolationProfile{}}
+	s,err:=NewServer(Config{BearerToken:"01234567890123456789012345678901",SigningKey:priv,StateDir:stateDir,Runtime:rt});if err!=nil{t.Fatal(err)}
+	instance,err:=s.ProvisionLocal(localProvisionRequest());if err!=nil{t.Fatal(err)}
+	if err:=rt.Terminate(instance.InstanceID);err!=nil{t.Fatal(err)}
+	restarted,err:=NewServer(Config{BearerToken:"01234567890123456789012345678901",SigningKey:priv,StateDir:stateDir,Runtime:rt});if err!=nil{t.Fatal(err)}
+	if len(restarted.instances)!=1{t.Fatal("expected persisted instance to be loaded before recovery reconciliation")}
+	if err:=restarted.ReconcileRecoveredInstances();err!=nil{t.Fatal(err)}
+	if len(restarted.instances)!=0||len(restarted.requests)!=0{t.Fatal("recovery reconciliation retained a stopped instance")}
+}
