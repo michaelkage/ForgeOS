@@ -25,7 +25,62 @@ var (
 	uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	instancePattern = regexp.MustCompile(`^fc-[a-f0-9]{32}$`)
 	workerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$`)
-	digestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+	digestPattern = regexp.MustCompile(`^sha256:[a-f0-9]{64}package agent
+
+import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+)
+
+const providerID = "forgeos-firecracker"
+const maxRequestBytes = 64 * 1024
+
+var (
+	uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	instancePattern = regexp.MustCompile(`^fc-[a-f0-9]{32}$`)
+	workerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$`)
+	)
+	bootstrapCredentialPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{40,64}package agent
+
+import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+)
+
+const providerID = "forgeos-firecracker"
+const maxRequestBytes = 64 * 1024
+
+var (
+	uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	instancePattern = regexp.MustCompile(`^fc-[a-f0-9]{32}$`)
+	workerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$`)
+	)
 )
 
 type Runtime interface {
