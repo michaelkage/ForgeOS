@@ -116,7 +116,7 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) {
 			writeError(w,409,"request_id_conflict"); return
 		}
 		resp, err := s.provisionResponse(existing, req.RequestID)
-		if err != nil { writeError(w,500,"attestation_failed"); return }
+		if err != nil { _ = s.cfg.Runtime.Terminate(existingID); writeError(w,500,"attestation_failed"); return }
 		writeJSON(w,200,resp); return
 	}
 	for _, existing := range s.instances {
@@ -139,7 +139,7 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) {
 		writeError(w,500,"state_persistence_failed"); return
 	}
 	resp, err := s.provisionResponse(record,req.RequestID)
-	if err != nil { _ = s.cfg.Runtime.Terminate(id); writeError(w,500,"attestation_failed"); return }
+	if err != nil { _ = s.cfg.Runtime.Terminate(id); delete(s.instances,id); delete(s.requests,req.RequestID); _ = s.saveState(); writeError(w,500,"attestation_failed"); return }
 	writeJSON(w,201,resp)
 }
 
@@ -237,6 +237,7 @@ func (s *Server) ProvisionLocal(req ProvisionRequest)(Instance,error){
 	uuid,err:=randomUUID();if err!=nil{return Instance{},err}
 	id:="fc-"+strings.ReplaceAll(uuid,"-","")
 	if err:=s.cfg.Runtime.Provision(req,id);err!=nil{_ = s.cfg.Runtime.Terminate(id);return Instance{},fmt.Errorf("provision Firecracker worker: %w",err)}
+	if evidence,ok:=s.cfg.Runtime.(interface{Evidence(string)(IsolationProfile,error)});ok{if _,err:=evidence.Evidence(id);err!=nil{_ = s.cfg.Runtime.Terminate(id);return Instance{},fmt.Errorf("host isolation evidence failed: %w",err)}}
 	now:=time.Now().UTC()
 	instance:=Instance{Provider:providerID,InstanceID:id,JobID:req.JobID,Attempt:req.Attempt,Architecture:req.Architecture,ImageDigest:req.ImageDigest,CreatedAt:now}
 	record:=storedInstance{Instance:instance,RequestID:req.RequestID,Resources:req.Resources,CreatedAt:now}
