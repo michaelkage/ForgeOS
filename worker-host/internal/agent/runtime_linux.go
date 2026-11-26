@@ -371,9 +371,9 @@ func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 	if _,e:=os.Stat(filepath.Join("/dev/mapper",m.Mapper));e==nil{return errors.New("encrypted VM mapping remains after teardown")}
 	if _,e:=os.Stat(m.CgroupPath);e==nil{if e=os.Remove(m.CgroupPath);e!=nil{return fmt.Errorf("remove VM cgroup: %w",e)}}
 	if _,e:=os.Stat(m.CgroupPath);e==nil{return errors.New("VM cgroup remains after teardown")}
-	acl,aclErr:=exec.Command("/usr/bin/getfacl","-cp","/dev/kvm").Output();if aclErr!=nil{return fmt.Errorf("inspect KVM device ACL: %w",aclErr)}
+	acl,aclErr:=runOutput("/usr/bin/getfacl","-cp","/dev/kvm");if aclErr!=nil{return fmt.Errorf("inspect KVM device ACL: %w",aclErr)}
 	entry:="user:"+strconv.Itoa(m.UID)+":"
-	if strings.Contains(string(acl),entry){if e=run(context.Background(),"/usr/bin/setfacl","-x","u:"+strconv.Itoa(m.UID),"/dev/kvm");e!=nil{return fmt.Errorf("remove KVM device ACL: %w",e)};acl,aclErr=exec.Command("/usr/bin/getfacl","-cp","/dev/kvm").Output();if aclErr!=nil||strings.Contains(string(acl),entry){return errors.New("per-VM KVM device ACL remains after teardown")}}
+	if strings.Contains(string(acl),entry){if e=run(context.Background(),"/usr/bin/setfacl","-x","u:"+strconv.Itoa(m.UID),"/dev/kvm");e!=nil{return fmt.Errorf("remove KVM device ACL: %w",e)};acl,aclErr=runOutput("/usr/bin/getfacl","-cp","/dev/kvm");if aclErr!=nil||strings.Contains(string(acl),entry){return errors.New("per-VM KVM device ACL remains after teardown")}}
 	if _,e:=os.Stat(filepath.Join("/run/netns",m.NetNS));e==nil{if e=run(context.Background(),"/usr/sbin/ip","netns","delete",m.NetNS);e!=nil{return fmt.Errorf("remove VM network namespace: %w",e)}}
 	if _,e:=os.Stat(filepath.Join("/run/netns",m.NetNS));e==nil{return errors.New("VM network namespace remains after teardown")}
 	if exists,e:=ipLinkExists(m.HostVeth);e!=nil{return e}else if exists{return errors.New("VM host network interface remains after teardown")}
@@ -439,6 +439,7 @@ func newUnixAPI(path string)*unixAPI{tr:=&http.Transport{DialContext:func(ctx co
 func (u *unixAPI) Put(path string,v any)error{b,e:=json.Marshal(v);if e!=nil{return e};req,e:=http.NewRequest(http.MethodPut,"http://localhost"+path,bytes.NewReader(b));if e!=nil{return e};req.Header.Set("Content-Type","application/json");resp,e:=u.client.Do(req);if e!=nil{return e};defer resp.Body.Close();if resp.StatusCode<200||resp.StatusCode>=300{body,_:=io.ReadAll(io.LimitReader(resp.Body,2048));return fmt.Errorf("Firecracker API %s returned %d: %s",path,resp.StatusCode,strings.TrimSpace(string(body)))};return nil}
 func (u *unixAPI) Get(path string,v any)error{resp,e:=u.client.Get("http://localhost"+path);if e!=nil{return e};defer resp.Body.Close();if resp.StatusCode!=200{return fmt.Errorf("Firecracker API returned %d",resp.StatusCode)};return json.NewDecoder(io.LimitReader(resp.Body,4096)).Decode(v)}
 
+func runOutput(path string,args ...string)([]byte,error){cmd:=exec.Command(path,args...);cmd.Env=[]string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin","LANG=C","LC_ALL=C"};return cmd.Output()}
 func run(ctx context.Context,path string,args ...string)error{cmd:=exec.CommandContext(ctx,path,args...);cmd.Env=[]string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin","LANG=C","LC_ALL=C"};out,err:=cmd.CombinedOutput();if err!=nil{return fmt.Errorf("%s failed (%v): %s",filepath.Base(path),err,strings.TrimSpace(string(out)))};return nil}
 func runInput(ctx context.Context,path string,input []byte,args ...string)error{cmd:=exec.CommandContext(ctx,path,args...);cmd.Env=[]string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin","LANG=C","LC_ALL=C"};cmd.Stdin=bytes.NewReader(input);out,err:=cmd.CombinedOutput();if err!=nil{return fmt.Errorf("%s failed (%v): %s",filepath.Base(path),err,strings.TrimSpace(string(out)))};return nil}
 func guestMAC(id string)string{h:=sha256.Sum256([]byte(id));return fmt.Sprintf("02:fc:%02x:%02x:%02x:%02x",h[0],h[1],h[2],h[3])}
