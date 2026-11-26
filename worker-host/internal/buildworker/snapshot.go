@@ -37,6 +37,8 @@ type Snapshot struct {
 		ID string `json:"id"`
 		Codename string `json:"codename"`
 		Architecture string `json:"architecture"`
+		Manufacturer string `json:"manufacturer"`
+		Model string `json:"model"`
 	} `json:"device"`
 	Manifest struct {
 		Path string `json:"path"`
@@ -92,6 +94,7 @@ func ParseSnapshot(raw []byte, expected string) (Snapshot,error) {
 	if s.Configuration.ID==""||s.Device.ID==""||!codenamePattern.MatchString(s.Device.Codename){return s,errors.New("snapshot device or configuration identity is invalid")}
 	if s.Configuration.ROMBase!="lineage"&&s.Configuration.ROMBase!="crdroid"{return s,errors.New("unsupported ROM base")}
 	if !branchPattern.MatchString(s.Configuration.ManifestRevision){return s,errors.New("manifest revision must be an explicit valid branch or tag")}
+	if !branchPattern.MatchString(s.Manifest.Branch){return s,errors.New("device manifest branch is invalid")}
 	if s.Configuration.RootMethod!="none"{return s,fmt.Errorf("root method %q is not supported by this build-worker release",s.Configuration.RootMethod)}
 	if s.Configuration.Options.IncludeGapps||s.Configuration.Options.IncludeMicroG||len(s.Configuration.Options.DebloatPackages)>0{return s,errors.New("GApps, microG, and debloat options are not supported by this build-worker release")}
 	for name,enabled:=range s.Configuration.Options.FeatureFlags{if enabled{return s,fmt.Errorf("feature flag %q is not supported by this build-worker release",name)}}
