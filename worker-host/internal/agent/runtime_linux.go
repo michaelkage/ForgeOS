@@ -82,6 +82,7 @@ type runtimeMeta struct {
 	DiskPath string `json:"diskPath"`
 	Mounted bool `json:"mounted"`
 	Opened bool `json:"opened"`
+	FirecrackerPID int `json:"firecrackerPid"`
 }
 
 func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
@@ -135,6 +136,7 @@ func (r *LinuxRuntime) Provision(req ProvisionRequest,id string) error {
 	if err:=r.createCgroup(meta,req.Resources);err!=nil{return rollback(err)}
 	if err:=r.setupNetwork(meta,cidrs);err!=nil{return rollback(err)}
 	if err:=r.launchFirecracker(meta,req,kernel);err!=nil{return rollback(err)}
+	pid,err:=r.findFirecrackerPID(meta);if err!=nil{return rollback(err)};meta.FirecrackerPID=pid;if err:=r.writeMeta(meta);err!=nil{return rollback(err)}
 	if err:=r.sendBootstrap(meta,req);err!=nil{return rollback(err)}
 	if err:=r.writeMeta(meta);err!=nil{return rollback(err)}
 	profile:=IsolationProfile{
@@ -149,7 +151,7 @@ func (r *LinuxRuntime) Provision(req ProvisionRequest,id string) error {
 
 func (r *LinuxRuntime) Evidence(id string)(IsolationProfile,error){
 	r.mu.Lock();defer r.mu.Unlock()
-	m,err:=r.readMeta(id);if err!=nil{return IsolationProfile{},errors.New("isolation evidence is unavailable")};if err:=verifyFirecrackerInCgroup(m);err!=nil{return IsolationProfile{},err};if err:=r.moveKvmPitThreads();err!=nil{return IsolationProfile{},err};if p,ok:=r.evidence[id];ok{return p,nil};return IsolationProfile{FirecrackerMicroVM:true,DedicatedKernel:true,Jailer:true,NonRootVMM:true,NoHostMounts:true,NoContainerSocket:true,NoHostPIDNamespace:true,EncryptedEphemeralDisk:true,HardCPULimit:true,HardMemoryLimit:true,HardDiskLimit:true,HardProcessLimit:true,WallTimeLimit:true,EgressFiltering:true,MetadataBlocked:true,DestroyAfterJob:true,EgressPolicyID:m.EgressPolicyID,Resources:m.Resources},nil
+	m,err:=r.readMeta(id);if err!=nil{return IsolationProfile{},errors.New("isolation evidence is unavailable")};if err:=r.verifyFirecrackerInCgroup(m);err!=nil{return IsolationProfile{},err};if err:=r.moveKvmPitThreads();err!=nil{return IsolationProfile{},err};if p,ok:=r.evidence[id];ok{return p,nil};return IsolationProfile{FirecrackerMicroVM:true,DedicatedKernel:true,Jailer:true,NonRootVMM:true,NoHostMounts:true,NoContainerSocket:true,NoHostPIDNamespace:true,EncryptedEphemeralDisk:true,HardCPULimit:true,HardMemoryLimit:true,HardDiskLimit:true,HardProcessLimit:true,WallTimeLimit:true,EgressFiltering:true,MetadataBlocked:true,DestroyAfterJob:true,EgressPolicyID:m.EgressPolicyID,Resources:m.Resources},nil
 }
 
 func (r *LinuxRuntime) Inspect(id string)(string,error){
@@ -361,7 +363,7 @@ func (r *LinuxRuntime) firecrackerState(m runtimeMeta)(string,error){
 
 func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 	cgroupProcs:=filepath.Join(m.CgroupPath,"cgroup.procs")
-	targetPIDs:=map[int]bool{};if b,e:=os.ReadFile(cgroupProcs);e==nil{for _,raw:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(raw);if pid>1{targetPIDs[pid]=true}}}
+	targetPIDs:=map[int]bool{};if m.FirecrackerPID>1{targetPIDs[m.FirecrackerPID]=true};if b,e:=os.ReadFile(cgroupProcs);e==nil{for _,raw:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(raw);if pid>1{targetPIDs[pid]=true}}}
 	if _,e:=os.Stat(cgroupProcs);e==nil{
 		if _,e=os.Stat(filepath.Join(m.CgroupPath,"cgroup.kill"));e==nil{if e=os.WriteFile(filepath.Join(m.CgroupPath,"cgroup.kill"),[]byte("1"),0200);e!=nil{return fmt.Errorf("kill Firecracker cgroup: %w",e)}}else{
 			b,_:=os.ReadFile(cgroupProcs);for _,line:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(line);if pid>1{_ = syscall.Kill(pid,syscall.SIGKILL)}}
@@ -369,6 +371,11 @@ func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 		deadline:=time.Now().Add(15*time.Second)
 		for time.Now().Before(deadline){b,e:=os.ReadFile(cgroupProcs);if e!=nil||len(bytes.TrimSpace(b))==0{break};time.Sleep(100*time.Millisecond)}
 		b,e:=os.ReadFile(cgroupProcs);if e==nil&&len(bytes.TrimSpace(b))>0{return errors.New("Firecracker processes remain; refusing to detach their resources")}
+	}
+	if m.FirecrackerPID>1&&r.processMatchesInstance(m,m.FirecrackerPID){
+		_ = syscall.Kill(m.FirecrackerPID,syscall.SIGKILL)
+		deadline:=time.Now().Add(5*time.Second);for time.Now().Before(deadline)&&r.processMatchesInstance(m,m.FirecrackerPID){time.Sleep(50*time.Millisecond)}
+		if r.processMatchesInstance(m,m.FirecrackerPID){return errors.New("Firecracker VMM remains alive after teardown signal")}
 	}
 	if err:=killKvmPitThreadsForCgroup(targetPIDs);err!=nil{return err}
 	if exists,e:=nftTableExists("inet",m.PolicyTable);e!=nil{return e}else if exists{if e=run(context.Background(),"/usr/sbin/nft","delete","table","inet",m.PolicyTable);e!=nil{return fmt.Errorf("remove VM egress filter: %w",e)}}
@@ -411,13 +418,26 @@ func (r *LinuxRuntime) moveKvmPitThreads()error{
 	procs,err:=os.ReadDir("/proc");if err!=nil{return err}
 	owners:=map[int]string{}
 	entries,err:=os.ReadDir(r.cfg.StateDir);if err!=nil&&!os.IsNotExist(err){return err}
-	for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if e!=nil{continue};b,e:=os.ReadFile(filepath.Join(m.CgroupPath,"cgroup.procs"));if e!=nil{continue};for _,raw:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(raw);if pid>1{owners[pid]=m.CgroupPath}}}
+	for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if e!=nil{continue};b,e:=os.ReadFile(filepath.Join(m.CgroupPath,"cgroup.procs"));if e!=nil{continue};if m.FirecrackerPID>1{owners[m.FirecrackerPID]=m.CgroupPath}else{for _,raw:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(raw);if pid>1&&r.processMatchesInstance(m,pid){owners[pid]=m.CgroupPath}}}}
 	for _,entry:=range procs{threadPID,e:=strconv.Atoi(entry.Name());if e!=nil{continue};comm,e:=os.ReadFile(filepath.Join("/proc",entry.Name(),"comm"));if e!=nil{continue};name:=strings.TrimSpace(string(comm));if !strings.HasPrefix(name,"kvm-pit/"){continue};targetPID,e:=strconv.Atoi(strings.TrimPrefix(name,"kvm-pit/"));if e!=nil{continue};path,ok:=owners[targetPID];if !ok{continue};group,e:=os.ReadFile(filepath.Join(path,"cgroup.procs"));if e!=nil{return e};found:=false;for _,raw:=range strings.Fields(string(group)){pid,_:=strconv.Atoi(raw);if pid==threadPID{found=true;break}};if found{continue};if e=os.WriteFile(filepath.Join(path,"cgroup.procs"),[]byte(strconv.Itoa(threadPID)),0644);e!=nil{if _,statErr:=os.Stat(filepath.Join("/proc",entry.Name()));os.IsNotExist(statErr){continue};return fmt.Errorf("move KVM PIT thread %d into VM cgroup: %w",threadPID,e)};verify,e:=os.ReadFile(filepath.Join(path,"cgroup.procs"));if e!=nil||!strings.Contains(" "+string(verify)+" "," "+strconv.Itoa(threadPID)+" "){return fmt.Errorf("KVM PIT thread %d was not confirmed in VM cgroup",threadPID)}}
 	return nil
 }
-func verifyFirecrackerInCgroup(m runtimeMeta)error{
+func (r *LinuxRuntime) findFirecrackerPID(m runtimeMeta)(int,error){
+	if raw,err:=os.ReadFile(filepath.Join(m.RootDir,"firecracker.pid"));err==nil{if pid,e:=strconv.Atoi(strings.TrimSpace(string(raw)));e==nil&&pid>1&&r.processMatchesInstance(m,pid){return pid,nil}}
+	b,err:=os.ReadFile(filepath.Join(m.CgroupPath,"cgroup.procs"));if err!=nil{return 0,err}
+	for _,raw:=range strings.Fields(string(b)){pid,e:=strconv.Atoi(raw);if e==nil&&r.processMatchesInstance(m,pid){return pid,nil}}
+	return 0,errors.New("jailer PID file and enforced cgroup do not identify a live Firecracker process")
+}
+func (r *LinuxRuntime) processMatchesInstance(m runtimeMeta,pid int)bool{
+	comm,err:=os.ReadFile(filepath.Join("/proc",strconv.Itoa(pid),"comm"));if err!=nil||!strings.Contains(strings.ToLower(string(comm)),"firecracker"){return false}
+	expected:=filepath.Join(m.RootDir,filepath.Base(r.cfg.FirecrackerPath))
+	actual,err:=os.Stat(filepath.Join("/proc",strconv.Itoa(pid),"exe"));if err!=nil{return false}
+	want,err:=os.Stat(expected);if err!=nil{return false}
+	return os.SameFile(actual,want)
+}
+func (r *LinuxRuntime) verifyFirecrackerInCgroup(m runtimeMeta)error{
 	b,err:=os.ReadFile(filepath.Join(m.CgroupPath,"cgroup.procs"));if err!=nil{return err}
-	for _,raw:=range strings.Fields(string(b)){pid,e:=strconv.Atoi(raw);if e!=nil{continue};comm,e:=os.ReadFile(filepath.Join("/proc",strconv.Itoa(pid),"comm"));if e==nil&&strings.Contains(strings.ToLower(string(comm)),"firecracker"){return nil}}
+	for _,raw:=range strings.Fields(string(b)){pid,e:=strconv.Atoi(raw);if e==nil&&pid==m.FirecrackerPID&&r.processMatchesInstance(m,pid){return nil}}
 	return errors.New("Firecracker VMM is not present in its enforced cgroup")
 }
 func killKvmPitThreadsForCgroup(targets map[int]bool)error{
