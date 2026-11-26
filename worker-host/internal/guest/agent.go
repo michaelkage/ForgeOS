@@ -33,7 +33,8 @@ var digestRE=regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 type BootstrapPayload struct {
 	SchemaVersion int `json:"schemaVersion"`
-	JobID string `json:"jobId"` `json:"workerId"`
+	JobID string `json:"jobId"`
+	WorkerID string `json:"workerId"`
 	Attempt int `json:"attempt"`
 	Architecture string `json:"architecture"`
 	ImageDigest string `json:"imageDigest"`
