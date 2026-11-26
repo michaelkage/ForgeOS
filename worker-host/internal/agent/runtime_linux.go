@@ -109,7 +109,7 @@ func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
 	return &LinuxRuntime{cfg:cfg,evidence:map[string]IsolationProfile{},terminating:map[string]bool{},verifiedAt:map[string]time.Time{}},nil
 }
 
-func validateEgressCIDR(raw string)error{p,err:=netip.ParsePrefix(raw);if err!=nil||!p.Addr().Is4()||isForbiddenEgress(p){return errors.New("egress CIDR must be public IPv4 and must not include private, reserved, or metadata ranges")};return nil}
+func validateEgressCIDR(raw string)error{p,err:=netip.ParsePrefix(raw);if err!=nil||!p.Addr().Is4()||p!=p.Masked()||isForbiddenEgress(p){return errors.New("egress CIDR must be public IPv4 and must not include private, reserved, or metadata ranges")};return nil}
 
 func isForbiddenEgress(p netip.Prefix) bool {
 	blocked:=[]netip.Prefix{}
