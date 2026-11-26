@@ -71,8 +71,7 @@ func(l *ledger)appendLocked(r ledgerRecord)error{
 	sum:=sha256.Sum256(canonical);r.RecordSHA256=hex.EncodeToString(sum[:])
 	b,err:=json.Marshal(r);if err!=nil{return err}
 	f,err:=os.OpenFile(l.path,os.O_APPEND|os.O_WRONLY,0600);if err!=nil{return err}
-	_,err=f.Write(append(b,'
-'));if err==nil{err=f.Sync()}
+	_,err=f.Write(append(b,byte(10)));if err==nil{err=f.Sync()}
 	closeErr:=f.Close();if err!=nil{return err};if closeErr!=nil{return closeErr}
 	l.lastHash=r.RecordSHA256
 	return nil
