@@ -203,8 +203,8 @@ func (r *LinuxRuntime) makeMeta(req ProvisionRequest,id string)(runtimeMeta,erro
 	var gateway,guest,hostVethIP,guestVethIP netip.Addr
 	var network netip.Prefix
 	found:=false
-	for n:=0;n<16000;n++{idx:=(netSlot+n)%16000;base:=uint32(0x0afd0000)+uint32(idx*4);g:=netip.AddrFrom4([4]byte{byte(base>>24),byte(base>>16),byte(base>>8),byte(base)});p:=netip.PrefixFrom(g,30).Masked();if usedNet[p.String()]{continue};gateway=g;guest=g.Next();network=p
-		vbase:=uint32(0x0afc0000)+uint32(idx*4);hostVethIP=netip.AddrFrom4([4]byte{byte(vbase>>24),byte(vbase>>16),byte(vbase>>8),byte(vbase)});guestVethIP=hostVethIP.Next();found=true;break}
+	for n:=0;n<16000;n++{idx:=(netSlot+n)%16000;base:=uint32(0x0afd0000)+uint32(idx*4);g:=netip.AddrFrom4([4]byte{byte(base>>24),byte(base>>16),byte(base>>8),byte(base)});p:=netip.PrefixFrom(g,30).Masked();if usedNet[p.String()]{continue};gateway=g.Next();guest=gateway.Next();network=p
+		vbase:=uint32(0x0afc0000)+uint32(idx*4);vnet:=netip.AddrFrom4([4]byte{byte(vbase>>24),byte(vbase>>16),byte(vbase>>8),byte(vbase)});hostVethIP=vnet.Next();guestVethIP=hostVethIP.Next();found=true;break}
 	if !found{return runtimeMeta{},errors.New("no free per-VM network range remains")}
 	short:=hex.EncodeToString(sum[:6]);jailDir:=filepath.Join(r.cfg.ChrootBase,"firecracker",id)
 	return runtimeMeta{ID:id,CreatedAt:time.Now().UTC(),Deadline:time.Now().Add(time.Duration(req.Resources.WallTimeSeconds)*time.Second).UTC(),UID:uid,GID:gid,Tap:"ft"+short[:11],GuestIP:guest.String(),GatewayIP:gateway.String(),NetworkCIDR:network.String(),NetNS:"fn"+short[:11],HostVeth:"fh"+short[:11],GuestVeth:"fv"+short[:11],HostVethIP:hostVethIP.String(),GuestVethIP:guestVethIP.String(),Mapper:"fg"+short,PolicyTable:"forgeos_"+short,NATTable:"forgeos_nat_"+short,CgroupPath:filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent,id),JailDir:jailDir,RootDir:filepath.Join(jailDir,"root"),DiskPath:filepath.Join(r.cfg.StateDir,id,"ephemeral.luks"),Resources:req.Resources,EgressPolicyID:req.EgressPolicyID},nil
