@@ -1,0 +1,190 @@
+//go:build linux
+
+package guest
+
+import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+)
+
+var uuidRE=regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+var credentialRE=regexp.MustCompile(`^[A-Za-z0-9_-]{40,64}$`)
+var digestRE=regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+
+type BootstrapPayload struct {
+	SchemaVersion int `json:"schemaVersion"`
+	JobID string `json:"jobId"`
+	Attempt int `json:"attempt"`
+	Architecture string `json:"architecture"`
+	ImageDigest string `json:"imageDigest"`
+	APIBaseURL string `json:"apiBaseUrl"`
+	BootstrapCredential string `json:"bootstrapCredential"`
+	Nonce string `json:"nonce"`
+	IssuedAt time.Time `json:"issuedAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+type Envelope struct { Payload BootstrapPayload `json:"payload"`; Signature string `json:"signature"` }
+type VerifiedBootstrap struct { Payload BootstrapPayload; API *url.URL }
+type RedeemedJob struct { JobID string `json:"jobId"`; Attempt int `json:"attempt"`; WorkerID string `json:"workerId"`; LeaseToken string `json:"leaseToken"`; Snapshot json.RawMessage `json:"snapshot"`; SnapshotSHA256 string `json:"snapshotSha256"` }
+
+func VerifyEnvelope(raw []byte,publicKey ed25519.PublicKey,now time.Time)(VerifiedBootstrap,error){
+	if len(raw)==0||len(raw)>64*1024{return VerifiedBootstrap{},errors.New("bootstrap envelope size is invalid")}
+	var env Envelope
+	dec:=json.NewDecoder(bytes.NewReader(raw));dec.DisallowUnknownFields()
+	if err:=dec.Decode(&env);err!=nil{return VerifiedBootstrap{},errors.New("bootstrap envelope is malformed")}
+	if len(publicKey)!=ed25519.PublicKeySize{return VerifiedBootstrap{},errors.New("pinned host-agent public key is invalid")}
+	sig,err:=base64.StdEncoding.DecodeString(env.Signature);if err!=nil||len(sig)!=ed25519.SignatureSize{return VerifiedBootstrap{},errors.New("bootstrap signature encoding is invalid")}
+	canonical,err:=canonicalJSON(env.Payload);if err!=nil||!ed25519.Verify(publicKey,canonical,sig){return VerifiedBootstrap{},errors.New("bootstrap signature verification failed")}
+	p:=env.Payload
+	if p.SchemaVersion!=1||!uuidRE.MatchString(p.JobID)||p.Attempt<1||p.Attempt>20||(p.Architecture!="x86_64"&&p.Architecture!="arm64")||!digestRE.MatchString(p.ImageDigest)||!credentialRE.MatchString(p.BootstrapCredential)||!uuidRE.MatchString(p.Nonce){return VerifiedBootstrap{},errors.New("bootstrap identity or credential is invalid")}
+	if p.IssuedAt.IsZero()||p.ExpiresAt.IsZero()||p.IssuedAt.After(now.Add(30*time.Second))||now.Sub(p.IssuedAt)>time.Minute||!p.ExpiresAt.After(now)||p.ExpiresAt.After(now.Add(5*time.Minute))||!p.ExpiresAt.After(p.IssuedAt){return VerifiedBootstrap{},errors.New("bootstrap envelope is expired or outside its validity window")}
+	api,err:=url.Parse(p.APIBaseURL);if err!=nil||api.Scheme!="https"||api.Host==""||api.User!=nil||api.RawQuery!=""||api.Fragment!=""{return VerifiedBootstrap{},errors.New("bootstrap API endpoint must be credential-free HTTPS")}
+	return VerifiedBootstrap{Payload:p,API:api},nil
+}
+
+func canonicalJSON(v any)([]byte,error){
+	raw,err:=json.Marshal(v);if err!=nil{return nil,err}
+	var decoded any;d:=json.NewDecoder(bytes.NewReader(raw));d.UseNumber();if err=d.Decode(&decoded);err!=nil{return nil,err}
+	return canonicalValue(decoded)
+}
+func canonicalValue(v any)([]byte,error){
+	switch x:=v.(type){
+	case map[string]any:
+		keys:=make([]string,0,len(x));for k:=range x{keys=append(keys,k)}
+		sortStrings(keys);var b bytes.Buffer;b.WriteByte('{')
+		for i,k:=range keys{if i>0{b.WriteByte(',')};kb,_:=json.Marshal(k);vb,e:=canonicalValue(x[k]);if e!=nil{return nil,e};b.Write(kb);b.WriteByte(':');b.Write(vb)}
+		b.WriteByte('}');return b.Bytes(),nil
+	case []any:
+		var b bytes.Buffer;b.WriteByte('[');for i,a:=range x{if i>0{b.WriteByte(',')};z,e:=canonicalValue(a);if e!=nil{return nil,e};b.Write(z)};b.WriteByte(']');return b.Bytes(),nil
+	default:return json.Marshal(v)
+	}
+}
+func sortStrings(a []string){for i:=1;i<len(a);i++{for j:=i;j>0&&a[j]<a[j-1];j--{a[j],a[j-1]=a[j-1],a[j]}}}
+
+type Config struct {
+	PublicKeyPath string
+	WorkerID string
+	WorkerPath string
+	ArtifactPath string
+	VsockPort uint32
+}
+func Run(ctx context.Context,cfg Config)error{
+	if !workerIDValid(cfg.WorkerID){return errors.New("guest worker identity is invalid")}
+	if !filepath.IsAbs(cfg.WorkerPath)||!filepath.IsAbs(cfg.ArtifactPath){return errors.New("guest worker and artifact paths must be absolute")}
+	if err:=trustedExecutable(cfg.WorkerPath);err!=nil{return err}
+	pub,err:=readEd25519PublicKey(cfg.PublicKeyPath);if err!=nil{return err}
+	if cfg.VsockPort==0{cfg.VsockPort=4050}
+	listener,err:=listenVsock(cfg.VsockPort);if err!=nil{return fmt.Errorf("listen for host bootstrap over vsock: %w",err)}
+	defer listener.Close()
+	_ = listener.(*vsockListener).SetDeadline(time.Now().Add(2*time.Minute))
+	conn,err:=listener.Accept();if err!=nil{return fmt.Errorf("accept host bootstrap: %w",err)}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10*time.Second))
+	var header [4]byte;if _,err:=io.ReadFull(conn,header[:]);err!=nil{return errors.New("read bootstrap frame length failed")}
+	n:=uint32(header[0])<<24|uint32(header[1])<<16|uint32(header[2])<<8|uint32(header[3])
+	if n==0||n>64*1024{return errors.New("bootstrap frame length is invalid")}
+	raw:=make([]byte,n);if _,err:=io.ReadFull(conn,raw);err!=nil{return errors.New("read bootstrap frame failed")}
+	verified,err:=VerifyEnvelope(raw,pub,time.Now());if err!=nil{return err}
+	job,err:=redeem(ctx,verified);if err!=nil{return err}
+	if job.JobID!=verified.Payload.JobID||job.Attempt!=verified.Payload.Attempt||!workerIDValid(job.WorkerID)||!uuidRE.MatchString(job.LeaseToken){return errors.New("redeemed job does not match signed bootstrap identity")}
+	snapshot,err:=canonicalRaw(job.Snapshot);if err!=nil{return err}
+	sum:=sha256.Sum256(snapshot)
+	if "sha256:"+hex.EncodeToString(sum[:])!=job.SnapshotSHA256{return errors.New("immutable build snapshot digest mismatch")}
+	workspace:="/workspace/forgeos"
+	if err:=os.MkdirAll(workspace,0700);err!=nil{return err}
+	snapshotPath:=filepath.Join(workspace,"snapshot.json")
+	if err:=os.WriteFile(snapshotPath,snapshot,0600);err!=nil{return err}
+	runCtx,cancel:=context.WithCancel(ctx);defer cancel()
+	heartbeatDone:=make(chan error,1)
+	go heartbeatLoop(runCtx,verified.API,job,heartbeatDone)
+	cmd:=exec.CommandContext(runCtx,cfg.WorkerPath,"--snapshot",snapshotPath,"--artifact",cfg.ArtifactPath)
+	cmd.Dir=workspace
+	cmd.Env=[]string{"PATH=/usr/local/bin:/usr/bin:/bin","HOME=/root","TMPDIR=/tmp","FORGEOS_JOB_ID="+job.JobID,"FORGEOS_JOB_ATTEMPT="+strconv.Itoa(job.Attempt),"FORGEOS_WORKER_ID="+job.WorkerID,"FORGEOS_LEASE_TOKEN="+job.LeaseToken,"FORGEOS_API_BASE_URL="+verified.API.String()}
+	if err:=cmd.Run();err!=nil{
+		cancel()
+		_ = reportFailure(context.Background(),verified.API,job,"worker_execution_failed","The isolated build worker exited unsuccessfully.")
+		return fmt.Errorf("isolated build worker failed: %w",err)
+	}
+	select{case err:=<-heartbeatDone:if err!=nil{return errors.New("build worker lease heartbeat was lost")};default:}
+	cancel()
+	if err:=uploadArtifact(ctx,verified.API,job,cfg.ArtifactPath);err!=nil{
+		_ = reportFailure(context.Background(),verified.API,job,"artifact_upload_failed","The build artifact could not be uploaded and verified.")
+		return err
+	}
+	return nil
+}
+
+func redeem(ctx context.Context,b VerifiedBootstrap)(RedeemedJob,error){
+	var out RedeemedJob
+	req,err:=http.NewRequestWithContext(ctx,http.MethodPost,b.API.ResolveReference(&url.URL{Path:"/api/internal/guest-bootstrap/redeem"}).String(),nil);if err!=nil{return out,err}
+	req.Header.Set("Authorization","Bearer "+b.Payload.BootstrapCredential)
+	resp,err:=newHTTPClient().Do(req);if err!=nil{return out,err};defer resp.Body.Close()
+	if resp.StatusCode!=http.StatusOK{return out,fmt.Errorf("guest bootstrap redemption rejected: HTTP %d",resp.StatusCode)}
+	if err:=json.NewDecoder(io.LimitReader(resp.Body,2*1024*1024)).Decode(&out);err!=nil{return out,err}
+	return out,nil
+}
+
+func heartbeatLoop(ctx context.Context,api *url.URL,job RedeemedJob,done chan<- error){
+	t:=time.NewTicker(60*time.Second);defer t.Stop()
+	for{select{case<-ctx.Done():done<-nil;return;case<-t.C:
+		body:=map[string]any{"workerId":job.WorkerID,"leaseToken":job.LeaseToken,"leaseSeconds":180}
+		if _,err:=postJSON(ctx,api,"/api/internal/build-jobs/"+job.JobID+"/heartbeat",job.LeaseToken,body,nil);err!=nil{done<-err;return}
+	}}
+}
+func uploadArtifact(ctx context.Context,api *url.URL,job RedeemedJob,path string)error{
+	f,err:=os.Open(path);if err!=nil{return err};defer f.Close()
+	st,err:=f.Stat();if err!=nil{return err};if !st.Mode().IsRegular()||st.Size()<=0||st.Size()>20*1024*1024*1024{return errors.New("build artifact size is invalid")}
+	h:=sha256.New();if _,err:=io.Copy(h,f);err!=nil{return err};digest:=hex.EncodeToString(h.Sum(nil));if _,err:=f.Seek(0,io.SeekStart);err!=nil{return err}
+	var intent struct{URL string `json:"url"`;RequiredHeaders map[string]string `json:"requiredHeaders"`}
+	_,err=postJSON(ctx,api,"/api/internal/build-jobs/"+job.JobID+"/artifact-upload",job.LeaseToken,map[string]any{"workerId":job.WorkerID,"leaseToken":job.LeaseToken,"sha256":digest,"sizeBytes":st.Size()},&intent);if err!=nil{return err}
+	target,err:=url.Parse(intent.URL);if err!=nil||target.Scheme!="https"||target.Host==""||target.User!=nil{return errors.New("artifact upload URL must use HTTPS")}
+	req,err:=http.NewRequestWithContext(ctx,http.MethodPut,target.String(),f);if err!=nil{return err}
+	req.ContentLength=st.Size();req.Header.Set("Content-Type","application/zip");req.Header.Set("If-None-Match","*")
+	for k,v:=range intent.RequiredHeaders{if strings.EqualFold(k,"content-type")||strings.EqualFold(k,"content-length")||strings.EqualFold(k,"if-none-match"){continue};req.Header.Set(k,v)}
+	resp,err:=newHTTPClient().Do(req);if err!=nil{return err};resp.Body.Close();if resp.StatusCode<200||resp.StatusCode>=300{return fmt.Errorf("artifact object upload failed: HTTP %d",resp.StatusCode)}
+	_,err=postJSON(ctx,api,"/api/internal/build-jobs/"+job.JobID+"/complete",job.LeaseToken,map[string]any{"workerId":job.WorkerID,"leaseToken":job.LeaseToken,"artifact":map[string]any{"sha256":digest,"sizeBytes":st.Size(),"contentType":"application/zip"}},nil)
+	return err
+}
+func reportFailure(ctx context.Context,api *url.URL,job RedeemedJob,code,message string)error{
+	_,err:=postJSON(ctx,api,"/api/internal/build-jobs/"+job.JobID+"/fail",job.LeaseToken,map[string]any{"workerId":job.WorkerID,"leaseToken":job.LeaseToken,"errorCode":code,"retryable":true,"message":message},nil)
+	return err
+}
+func postJSON(ctx context.Context,api *url.URL,path,token string,body any,out any)(int,error){
+	raw,err:=json.Marshal(body);if err!=nil{return 0,err}
+	target:=api.ResolveReference(&url.URL{Path:path})
+	req,err:=http.NewRequestWithContext(ctx,http.MethodPost,target.String(),bytes.NewReader(raw));if err!=nil{return 0,err}
+	req.Header.Set("Authorization","Bearer "+token);req.Header.Set("Content-Type","application/json")
+	resp,err:=newHTTPClient().Do(req);if err!=nil{return 0,err};defer resp.Body.Close()
+	if resp.StatusCode<200||resp.StatusCode>=300{return resp.StatusCode,fmt.Errorf("platform request rejected: HTTP %d",resp.StatusCode)}
+	if out!=nil{if err:=json.NewDecoder(io.LimitReader(resp.Body,2*1024*1024)).Decode(out);err!=nil{return resp.StatusCode,err}}
+	return resp.StatusCode,nil
+}
+func canonicalRaw(raw json.RawMessage)([]byte,error){var v any;d:=json.NewDecoder(bytes.NewReader(raw));d.UseNumber();if err:=d.Decode(&v);err!=nil{return nil,err};return canonicalValue(v)}
+func newHTTPClient()*http.Client{return &http.Client{Timeout:30*time.Second,CheckRedirect:func(*http.Request,[]*http.Request)error{return errors.New("redirects are not allowed")}}}
+func workerIDValid(s string)bool{return len(s)>=3&&len(s)<=64&&regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`).MatchString(s)}
+func trustedExecutable(path string)error{st,err:=os.Lstat(path);if err!=nil{return err};if !st.Mode().IsRegular()||st.Mode()&os.ModeSymlink!=0||st.Mode().Perm()&0022!=0{return errors.New("build worker executable must be a non-writable regular file")};return nil}
+func readEd25519PublicKey(path string)(ed25519.PublicKey,error){
+	b,err:=os.ReadFile(path);if err!=nil{return nil,err}
+	block,_:=pem.Decode(b);if block==nil{return nil,errors.New("host public key PEM is invalid")}
+	key,err:=x509.ParsePKIXPublicKey(block.Bytes);if err!=nil{return nil,err}
+	pub,ok:=key.(ed25519.PublicKey);if !ok{return nil,errors.New("pinned host public key must be Ed25519")}
+	return pub,nil
+}
