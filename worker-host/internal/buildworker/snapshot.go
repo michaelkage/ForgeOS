@@ -60,6 +60,8 @@ type Snapshot struct {
 		SourcePath string `json:"sourcePath"`
 		CommitSHA string `json:"commitSha"`
 	} `json:"sourceInputs"`
+	ValidationReport json.RawMessage `json:"validationReport"`
+	ConfigurationUpdatedAt json.RawMessage `json:"configurationUpdatedAt"`
 }
 
 func canonicalJSON(raw []byte) ([]byte, error) {
