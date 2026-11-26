@@ -120,7 +120,8 @@ func validGitRef(value string)bool{
 }
 func safeRelativePath(value string)bool{
 	if value==""{return true}
-	if strings.HasPrefix(value,"/")||strings.Contains(value,"\\")||path.Clean(value)!=value||value=="."||value==".."||strings.HasPrefix(value,"../"){return false}
+	if len(value)>512||strings.HasPrefix(value,"/")||strings.Contains(value,"\\")||path.Clean(value)!=value||value=="."||value==".."||strings.HasPrefix(value,"../"){return false}
+	for _,r:=range value{if r<0x20||r==0x7f{return false}}
 	return true
 }
 func validGitHubURL(value string)bool{
