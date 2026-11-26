@@ -93,7 +93,7 @@ func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
 	if !regexp.MustCompile("^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$").MatchString(cfg.CgroupParent)||strings.Contains(cfg.CgroupParent,".."){return nil,errors.New("cgroup parent must be a safe relative path")}
 	if cfg.VMMUIDBase+2000>60000||cfg.VMMGIDBase+2000>60000{return nil,errors.New("VMM identity pool exceeds the reserved system range")}
 	if !workerPattern.MatchString(cfg.WorkerID){return nil,errors.New("a stable worker ID is required")}
-	if cfg.VMMUIDBase<10000||cfg.VMMGIDBase<10000||cfg.IOBytesPerSecond<1_048_576 { return nil,errors.New("VMM identities and disk I/O limit are unsafe") }
+	if cfg.VMMUIDBase<10000||cfg.VMMUIDBase>60000||cfg.VMMGIDBase<10000||cfg.VMMGIDBase>60000||cfg.IOBytesPerSecond<1_048_576 { return nil,errors.New("VMM identities and disk I/O limit are unsafe") }
 	if cfg.VsockPort==0 { cfg.VsockPort=4050 }
 	if cfg.BootstrapAPIBaseURL=="" { return nil,errors.New("bootstrap API base URL is required") }; apiURL,apiErr:=url.Parse(cfg.BootstrapAPIBaseURL); if apiErr!=nil||apiURL.Scheme!="https:"||apiURL.Host==""||apiURL.User!=nil||apiURL.RawQuery!=""||apiURL.Fragment!="" { return nil,errors.New("bootstrap API base URL must be a credential-free HTTPS origin") }; if len(cfg.SigningKey)!=ed25519.PrivateKeySize{return nil,errors.New("Ed25519 signing key is required")}
 	for arch,path:=range cfg.KernelPaths { if (arch!="x86_64"&&arch!="arm64")||!filepath.IsAbs(path){return nil,errors.New("invalid kernel path mapping")} }
@@ -422,7 +422,7 @@ func (r *LinuxRuntime) verifyCgroupLimits(m runtimeMeta)error{
 	swap,err:=read("memory.swap.max");if err!=nil||swap!="0"{return errors.New("VM swap is not disabled")}
 	oom,err:=read("memory.oom.group");if err!=nil||oom!="1"{return errors.New("VM memory OOM group is not enabled")}
 	pids,err:=read("pids.max");if err!=nil||pids!=strconv.Itoa(m.Resources.ProcessLimit){return errors.New("VM host process limit is not enforced")}
-	st,err:=os.Stat(m.DiskPath);if err!=nil{return err};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok{return errors.New("cannot identify VM disk backing device")}
+	st,err:=os.Stat(m.DiskPath);if err!=nil{return err};if st.Size()!=int64(m.Resources.DiskGiB)*1024*1024*1024{return errors.New("encrypted VM disk size does not match its hard quota")};mounted,err:=isMountPoint(m.JailDir);if err!=nil||!mounted{return errors.New("encrypted VM workspace is not mounted")};if _,err:=os.Stat(filepath.Join("/dev/mapper",m.Mapper));err!=nil{return errors.New("encrypted VM block mapping is unavailable")};if !m.Deadline.After(m.CreatedAt)||m.Deadline.Sub(m.CreatedAt)>time.Duration(m.Resources.WallTimeSeconds)*time.Second+time.Second{return errors.New("VM wall-time deadline is invalid")};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok{return errors.New("cannot identify VM disk backing device")}
 	ioMax,err:=read("io.max");if err!=nil{return err};expected:=fmt.Sprintf("%d:%d rbps=%d wbps=%d",unixMajor(uint64(sys.Dev)),unixMinor(uint64(sys.Dev)),r.cfg.IOBytesPerSecond,r.cfg.IOBytesPerSecond);if !strings.Contains(ioMax,expected){return errors.New("VM disk I/O limit is not enforced")}
 	return nil
 }
