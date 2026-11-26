@@ -20,6 +20,7 @@ import (
 	"net/netip"
 	"os/user"
 	"regexp"
+	"runtime"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -122,6 +123,7 @@ func (r *LinuxRuntime) Provision(req ProvisionRequest,id string) error {
 	r.mu.Lock();defer r.mu.Unlock()
 	if !instancePattern.MatchString(id){return errors.New("invalid instance ID")}
 	if err:=validateRequest(req);err!=nil{return err}
+	if err:=r.verifyResourceCapacity(req.Resources);err!=nil{return err}
 	if err:=r.preflight();err!=nil{return err}
 	if err:=regularRootOwned(r.cfg.JailerPath);err!=nil{return fmt.Errorf("jailer binary rejected: %w",err)}
 	if err:=regularRootOwned(r.cfg.FirecrackerPath);err!=nil{return fmt.Errorf("Firecracker binary rejected: %w",err)}
@@ -175,6 +177,18 @@ func (r *LinuxRuntime) Terminate(id string)error{
 	meta,err:=r.readMeta(id);if err!=nil {if os.IsNotExist(err){return nil};return err}
 	meta.Phase="terminating";r.terminating[id]=true;if err:=r.writeMeta(meta);err!=nil{return errors.Join(err,r.cleanup(meta))}
 	if err:=r.cleanup(meta);err!=nil{return err}
+	return nil
+}
+
+func (r *LinuxRuntime) verifyResourceCapacity(res Resources)error{
+	if res.CPUCores>runtime.NumCPU(){return fmt.Errorf("requested %d vCPUs exceed the host's %d available CPUs",res.CPUCores,runtime.NumCPU())}
+	var info syscall.Sysinfo_t;if err:=syscall.Sysinfo(&info);err!=nil{return err}
+	total:=uint64(info.Totalram)*uint64(info.Unit);reserve:=total/10;if reserve<1024*1024*1024{reserve=1024*1024*1024}
+	required:=uint64(res.MemoryMiB+512)*1024*1024
+	if total<=reserve||required>total-reserve{return errors.New("host physical memory cannot safely satisfy the requested VM memory and host overhead reserve")}
+	var fs syscall.Statfs_t;if err:=syscall.Statfs(r.cfg.StateDir,&fs);err!=nil{return err}
+	available:=uint64(fs.Bavail)*uint64(fs.Bsize);disk:=uint64(res.DiskGiB)*1024*1024*1024
+	if available<disk{return errors.New("host filesystem does not have enough unallocated space for the fully reserved encrypted VM disk")}
 	return nil
 }
 
