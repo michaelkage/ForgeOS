@@ -469,7 +469,7 @@ func (r *LinuxRuntime) terminateAllForHostDrift(cause error)error{
 }
 func (r *LinuxRuntime) verifyCgroupLimits(m runtimeMeta)error{
 	read:=func(name string)(string,error){b,e:=os.ReadFile(filepath.Join(m.CgroupPath,name));return strings.TrimSpace(string(b)),e}
-	cpu,err:=read("cpu.max");if err!=nil||cpu!=fmt.Sprintf("%d00000 100000",m.Resources.CPUCores){return errors.New("VM CPU quota is not enforced")}
+	cpu,err:=read("cpu.max");if err!=nil||cpu!=fmt.Sprintf("%d 100000",m.Resources.CPUCores*100000){return errors.New("VM CPU quota is not enforced")}
 	memory,err:=read("memory.max");if err!=nil||memory!=strconv.FormatInt(int64(m.Resources.MemoryMiB+512)*1024*1024,10){return errors.New("VM memory limit is not enforced")}
 	swap,err:=read("memory.swap.max");if err!=nil||swap!="0"{return errors.New("VM swap is not disabled")}
 	oom,err:=read("memory.oom.group");if err!=nil||oom!="1"{return errors.New("VM memory OOM group is not enabled")}
