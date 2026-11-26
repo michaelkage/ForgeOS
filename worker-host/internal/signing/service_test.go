@@ -3,6 +3,8 @@ package signing
 import (
 	"archive/zip"
 	"crypto/tls"
+	"crypto/sha256"
+	"encoding/hex"
 	"crypto/x509"
 	"net/http/httptest"
 	"strings"
@@ -35,10 +37,11 @@ func TestVerifyOTARequiresJARSignatureEntriesAfterSigning(t *testing.T){
 }
 
 func TestAuthorizationRequiresMutualTLSAndBearerToken(t *testing.T){
-	s:=&Service{cfg:Config{BearerToken:strings.Repeat("s",40)}}
+	rawCert:=[]byte("pinned platform client certificate");certHash:=sha256.Sum256(rawCert)
+	s:=&Service{cfg:Config{BearerToken:strings.Repeat("s",40),ClientCertSHA256:hex.EncodeToString(certHash[:])}}
 	r:=httptest.NewRequest("POST","/v1/sign",nil);r.Header.Set("Authorization","Bearer "+s.cfg.BearerToken)
 	if s.authorized(r){t.Fatal("request without client certificate must be rejected")}
-	r.TLS=&tls.ConnectionState{PeerCertificates:[]*x509.Certificate{{}}}
+	r.TLS=&tls.ConnectionState{PeerCertificates:[]*x509.Certificate{{Raw:rawCert}}}
 	if !s.authorized(r){t.Fatal("valid mTLS identity and bearer token should be accepted")}
 	r.Header.Set("Authorization","Bearer "+strings.Repeat("x",40))
 	if s.authorized(r){t.Fatal("incorrect bearer token must be rejected")}
