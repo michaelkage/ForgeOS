@@ -1,4 +1,4 @@
-import { timingSafeEqual, verify as verifySignature } from "node:crypto";
+import { verify as verifySignature } from "node:crypto";
 
 export interface GuestBootstrapPayload {
   schemaVersion: 1;
