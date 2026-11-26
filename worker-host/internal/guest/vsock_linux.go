@@ -34,8 +34,8 @@ func (l *vsockListener) Addr()net.Addr{return vsockAddr{cid:vmaddrCIDAny,port:l.
 func (l *vsockListener) SetDeadline(t time.Time)error{var tv syscall.Timeval;if !t.IsZero(){d:=time.Until(t);if d<=0{d=time.Millisecond};tv=syscall.NsecToTimeval(d.Nanoseconds())};return syscall.SetsockoptTimeval(l.fd,syscall.SOL_SOCKET,syscall.SO_RCVTIMEO,&tv)}
 
 type vsockConn struct{fd int}
-func (c *vsockConn) Read(p []byte)(int,error){return syscall.Read(c.fd,p)}
-func (c *vsockConn) Write(p []byte)(int,error){return syscall.Write(c.fd,p)}
+func (c *vsockConn) Read(p []byte)(int,error){for{n,err:=syscall.Read(c.fd,p);if err==syscall.EINTR{continue};return n,err}}
+func (c *vsockConn) Write(p []byte)(int,error){for{n,err:=syscall.Write(c.fd,p);if err==syscall.EINTR{continue};return n,err}}
 func (c *vsockConn) Close()error{return syscall.Close(c.fd)}
 func (c *vsockConn) LocalAddr()net.Addr{return vsockAddr{}}
 func (c *vsockConn) RemoteAddr()net.Addr{return vsockAddr{}}
