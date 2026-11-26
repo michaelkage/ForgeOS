@@ -141,7 +141,7 @@ func Run(ctx context.Context,cfg Config)error{
 	if err:=killGuestWorkerCgroup(workerCgroup);err!=nil{_ = reportFailure(context.Background(),verified.API,job,"worker_process_cleanup_failed","Guest build worker processes could not be stopped.");return powerOffGuest()}
 	heartbeatStopped:=false
 	select{case heartbeatErr:=<-heartbeatDone:heartbeatStopped=true;if heartbeatErr!=nil{_ = reportFailure(context.Background(),verified.API,job,"worker_lease_lost","The build worker lease heartbeat was lost.");cancel();return powerOffGuest()};default:}
-	if err:=uploadArtifact(ctx,verified.API,job,cfg.ArtifactPath);err!=nil{
+	if err:=uploadArtifact(ctx,verified.API,job,cfg.ArtifactPath,filepath.Join(workspace,"source-lockfile.json"));err!=nil{
 		_ = reportFailure(context.Background(),verified.API,job,"artifact_upload_failed","The build artifact could not be uploaded and verified.")
 		cancel();if !heartbeatStopped{<-heartbeatDone}
 		return powerOffGuest()
@@ -229,7 +229,7 @@ func heartbeatLoop(ctx context.Context,api *url.URL,job RedeemedJob,cancel conte
 		if _,err:=postJSON(ctx,api,"/api/internal/build-jobs/"+job.JobID+"/heartbeat",job.LeaseToken,body,nil);err!=nil{cancel();done<-err;return}
 	}}
 }
-func uploadArtifact(ctx context.Context,api *url.URL,job RedeemedJob,path string)error{
+func uploadArtifact(ctx context.Context,api *url.URL,job RedeemedJob,path,lockfilePath string)error{
 	fd,err:=syscall.Open(path,syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW,0);if err!=nil{return err};f:=os.NewFile(uintptr(fd),path);defer f.Close()
 	st,err:=f.Stat();if err!=nil{return err};sys,ok:=st.Sys().(*syscall.Stat_t);if !st.Mode().IsRegular()||st.Size()<=0||st.Size()>20*1024*1024*1024||!ok||sys.Uid!=10000||st.Mode().Perm()&0022!=0{return errors.New("build artifact must be a bounded, non-writable regular file owned by the unprivileged worker")}
 	h:=sha256.New();if _,err:=io.Copy(h,f);err!=nil{return err};digest:=hex.EncodeToString(h.Sum(nil));if _,err:=f.Seek(0,io.SeekStart);err!=nil{return err}
@@ -240,7 +240,16 @@ func uploadArtifact(ctx context.Context,api *url.URL,job RedeemedJob,path string
 	req.ContentLength=st.Size();req.Header.Set("Content-Type","application/zip");req.Header.Set("If-None-Match","*")
 	for k,v:=range intent.RequiredHeaders{if strings.EqualFold(k,"content-type")||strings.EqualFold(k,"content-length")||strings.EqualFold(k,"if-none-match"){continue};req.Header.Set(k,v)}
 	resp,err:=newLongHTTPClient().Do(req);if err!=nil{return err};resp.Body.Close();if resp.StatusCode<200||resp.StatusCode>=300{return fmt.Errorf("artifact object upload failed: HTTP %d",resp.StatusCode)}
-	_,err=postJSONWithClient(ctx,api,"/api/internal/build-jobs/"+job.JobID+"/complete",job.LeaseToken,map[string]any{"workerId":job.WorkerID,"leaseToken":job.LeaseToken,"artifact":map[string]any{"sha256":digest,"sizeBytes":st.Size(),"contentType":"application/zip"}},nil,newLongHTTPClient())
+	lockfileFD,err:=syscall.Open(lockfilePath,syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW,0);if err!=nil{return errors.New("source lockfile is missing")}
+	lockfileFile:=os.NewFile(uintptr(lockfileFD),lockfilePath);defer lockfileFile.Close()
+	lockfileStat,err:=lockfileFile.Stat();if err!=nil||!lockfileStat.Mode().IsRegular()||lockfileStat.Size()<1||lockfileStat.Size()>2*1024*1024{return errors.New("source lockfile has an invalid file type or size")}
+	lockfileRaw,err:=io.ReadAll(io.LimitReader(lockfileFile,2*1024*1024+1));if err!=nil||len(lockfileRaw)>2*1024*1024{return errors.New("source lockfile exceeds size policy")}
+	lockfileCanonical,err:=canonicalRaw(lockfileRaw);if err!=nil{return errors.New("source lockfile JSON is invalid")}
+	lockfileSum:=sha256.Sum256(lockfileCanonical)
+	var lockfile any
+	decoder:=json.NewDecoder(bytes.NewReader(lockfileRaw));decoder.DisallowUnknownFields()
+	if err:=decoder.Decode(&lockfile);err!=nil{return errors.New("source lockfile schema is invalid")}
+	_,err=postJSONWithClient(ctx,api,"/api/internal/build-jobs/"+job.JobID+"/complete",job.LeaseToken,map[string]any{"workerId":job.WorkerID,"leaseToken":job.LeaseToken,"artifact":map[string]any{"sha256":digest,"sizeBytes":st.Size(),"contentType":"application/zip"},"sourceLockfile":lockfile,"sourceLockfileSha256":hex.EncodeToString(lockfileSum[:])},nil,newLongHTTPClient())
 	return err
 }
 func reportFailure(ctx context.Context,api *url.URL,job RedeemedJob,code,message string)error{

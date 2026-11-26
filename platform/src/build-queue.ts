@@ -29,7 +29,25 @@ export const buildArtifactSchema = z.object({
     sizeBytes: z.number().int().positive().max(20 * 1024 * 1024 * 1024),
     contentType: z.literal("application/zip")
 }).strict();
-const completionSchema = leaseSchema.extend({ artifact: buildArtifactSchema }).strict();
+export const sourceLockfileSchema = z.object({
+  schemaVersion: z.literal(1),
+  projects: z.array(z.object({
+    path: z.string().min(1).max(512).refine(value => !value.startsWith("/") && !/[\x00-\x1f\x7f\\]/.test(value) && value.split("/").every(part => part.length > 0 && part !== "." && part !== "..")),
+    name: z.string().min(1).max(512).refine(value => !/[\x00-\x1f\x7f]/.test(value)),
+    revision: z.string().regex(/^[a-f0-9]{40}$/)
+  }).strict()).min(1).max(2000)
+}).strict().superRefine((lockfile, ctx) => {
+  const paths = lockfile.projects.map(project => project.path);
+  if (new Set(paths).size !== paths.length) ctx.addIssue({ code: "custom", message: "Source lockfile paths must be unique", path: ["projects"] });
+  for (let i = 1; i < paths.length; i++) {
+    if (paths[i - 1]! >= paths[i]!) ctx.addIssue({ code: "custom", message: "Source lockfile projects must be sorted by path", path: ["projects", i, "path"] });
+  }
+});
+const completionSchema = leaseSchema.extend({
+  artifact: buildArtifactSchema,
+  sourceLockfile: sourceLockfileSchema,
+  sourceLockfileSha256: z.string().regex(/^[a-f0-9]{64}$/)
+}).strict();
 const uploadIntentSchema = leaseSchema.extend({
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   sizeBytes: z.number().int().positive().max(20 * 1024 * 1024 * 1024)
@@ -213,7 +231,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         snapshot_sha256,snapshot->'configuration'->>'name' AS configuration_name,
         snapshot->'device'->>'codename' AS device_codename,
         snapshot->'configuration'->>'romBase' AS rom_base,
-        artifact_sha256,artifact_size_bytes,created_at,started_at,completed_at,updated_at
+        artifact_sha256,artifact_size_bytes,source_lockfile AS "sourceLockfile",source_lockfile_sha256 AS "sourceLockfileSha256",created_at,started_at,completed_at,updated_at
        FROM forgeos_build_jobs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100`,
       [request.user!.id]
     );
@@ -229,7 +247,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         snapshot_sha256,snapshot->'configuration'->>'name' AS configuration_name,
         snapshot->'device'->>'codename' AS device_codename,
         snapshot->'configuration'->>'romBase' AS rom_base,
-        artifact_sha256,artifact_size_bytes,created_at,started_at,completed_at,updated_at
+        artifact_sha256,artifact_size_bytes,source_lockfile AS "sourceLockfile",source_lockfile_sha256 AS "sourceLockfileSha256",created_at,started_at,completed_at,updated_at
        FROM forgeos_build_jobs WHERE id=$1 AND user_id=$2`,
       [id.data, request.user!.id]
     );
@@ -493,6 +511,10 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     if (!id.success || !parsed.success) return reply.code(400).send({ error: "invalid_build_completion" });
     if (!workerLeaseAuthorized(request, reply, parsed.data.leaseToken)) return;
     const artifact = parsed.data.artifact;
+    const sourceLockfileDigest = createHash("sha256").update(canonicalJson(parsed.data.sourceLockfile)).digest("hex");
+    if (sourceLockfileDigest !== parsed.data.sourceLockfileSha256) {
+      return reply.code(422).send({ error: "source_lockfile_digest_mismatch" });
+    }
     try {
       const intent = await query<{ expected_sha256: string; expected_size_bytes: string; object_key: string; snapshot_sha256: string; attempts: number; user_id: string }>(
         `SELECT i.expected_sha256,i.expected_size_bytes,i.object_key,j.snapshot_sha256,j.attempts,j.user_id
@@ -524,10 +546,11 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         const result = await client.query(
           `UPDATE forgeos_build_jobs SET status='succeeded',artifact_object_key=$4,artifact_sha256=$5,
             artifact_size_bytes=$6,artifact_content_type='application/zip',artifact_verified_at=now(),
+            source_lockfile=$7::jsonb,source_lockfile_sha256=$8,
             completed_at=now(),updated_at=now(),lease_token=NULL,lease_expires_at=NULL,worker_id=NULL
            WHERE id=$1 AND status='leased' AND worker_id=$2 AND lease_token=$3 AND lease_expires_at > now()
            RETURNING id,configuration_id,status,attempts,artifact_sha256,artifact_size_bytes,artifact_verified_at,completed_at`,
-          [id.data, parsed.data.workerId, parsed.data.leaseToken, signedArtifact.objectKey, signedArtifact.sha256, signedArtifact.sizeBytes]
+          [id.data, parsed.data.workerId, parsed.data.leaseToken, signedArtifact.objectKey, signedArtifact.sha256, signedArtifact.sizeBytes, JSON.stringify(parsed.data.sourceLockfile), sourceLockfileDigest]
         );
         if (!result.rowCount) {
           await client.query("ROLLBACK");
@@ -537,7 +560,8 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
           "INSERT INTO forgeos_build_job_events(build_job_id,attempt,worker_id,event_type,details) VALUES($1,$2,$3,'artifact_verified',$4)",
           [result.rows[0]!.id, result.rows[0]!.attempts, parsed.data.workerId, JSON.stringify({
             inputSha256: artifact.sha256, inputSizeBytes: artifact.sizeBytes,
-            sha256: signedArtifact.sha256, sizeBytes: signedArtifact.sizeBytes, signed: true
+            sha256: signedArtifact.sha256, sizeBytes: signedArtifact.sizeBytes, signed: true,
+            sourceLockfileSha256: sourceLockfileDigest, sourceProjectCount: parsed.data.sourceLockfile.projects.length
           })]
         );
         await client.query("UPDATE forgeos_artifact_upload_intents SET verified_at=now() WHERE build_job_id=$1 AND lease_token=$2 AND verified_at IS NULL", [id.data, parsed.data.leaseToken]);

@@ -15,7 +15,7 @@ import { deviceSourceSchema, verifyDeviceSource } from "./device-resolver.js";
 import { registerBuildRoutes } from "./build-queue.js";
 import { registerGuestBootstrapRoutes } from "./guest-bootstrap-credentials.js";
 
-const app = Fastify({ logger: true, trustProxy: config.TRUST_PROXY.length ? config.TRUST_PROXY : false, bodyLimit: 256 * 1024 });
+const app = Fastify({ logger: true, trustProxy: config.TRUST_PROXY.length ? config.TRUST_PROXY : false, bodyLimit: 3 * 1024 * 1024 });
 await app.register(helmet, {
   contentSecurityPolicy: {
     directives: {

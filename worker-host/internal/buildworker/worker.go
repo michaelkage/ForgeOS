@@ -2,6 +2,8 @@ package buildworker
 
 import (
 	"archive/zip"
+	"bytes"
+	"encoding/json"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +20,8 @@ import (
 )
 
 type Config struct { SnapshotPath string; ExpectedSHA256 string; ArtifactPath string }
+type lockedProject struct { Path string `json:"path"`; Name string `json:"name"`; Revision string `json:"revision"` }
+type sourceLockfile struct { SchemaVersion int `json:"schemaVersion"`; Projects []lockedProject `json:"projects"` }
 var safeArtifactName=regexp.MustCompile(`(?i)\.zip$`)
 const lineageManifestURL="https://github.com/LineageOS/android.git"
 const crdroidManifestURL="https://github.com/crdroidandroid/android.git"
@@ -46,9 +50,17 @@ func Run(ctx context.Context,cfg Config)error{
 	jobs:=fmt.Sprintf("%d",max(2,min(16,runtime.NumCPU())))
 	if err:=run(ctx,workspace,ctxDeadlineBudget(ctx),"/usr/local/bin/repo","sync","-c","--fail-fast","--force-sync","--no-clone-bundle","--no-tags","-j",jobs);err!=nil{return fmt.Errorf("repo sync: %w",err)}
 	if err:=checkoutExternalSources(ctx,workspace,s,externalSources);err!=nil{return fmt.Errorf("stage pinned device, kernel, and vendor sources: %w",err)}
+	lockfile,err:=captureSourceLockfile(ctx,workspace,s,externalSources)
+	if err!=nil{return fmt.Errorf("capture immutable Android source revisions: %w",err)}
+	lockfileBytes,err:=json.Marshal(lockfile);if err!=nil{return err}
 	target:="lineage_"+s.Device.Codename+"-userdebug"
 	script:="set -euo pipefail; source build/envsetup.sh; lunch \"$1\"; mka bacon"
 	if err:=run(ctx,workspace,ctxDeadlineBudget(ctx),"/bin/bash","-lc",script,"forgeos-build-worker",target);err!=nil{return fmt.Errorf("Android ROM build: %w",err)}
+	finalLockfile,err:=captureSourceLockfile(ctx,workspace,s,externalSources)
+	if err!=nil{return fmt.Errorf("verify Android source revisions after build: %w",err)}
+	finalLockfileBytes,err:=json.Marshal(finalLockfile);if err!=nil{return err}
+	if !bytes.Equal(lockfileBytes,finalLockfileBytes){return errors.New("Android source revisions changed during the build")}
+	if err:=os.WriteFile(filepath.Join(workspace,"source-lockfile.json"),finalLockfileBytes,0400);err!=nil{return err}
 	outputDir:=filepath.Join(workspace,"out","target","product",s.Device.Codename)
 	entries,err:=os.ReadDir(outputDir);if err!=nil{return fmt.Errorf("read Android output directory: %w",err)}
 	var candidates []string
@@ -59,6 +71,38 @@ func Run(ctx context.Context,cfg Config)error{
 	if err:=copyFile(candidates[0],artifact);err!=nil{return err}
 	return verifyFlashableZIP(artifact)
 }
+
+func captureSourceLockfile(ctx context.Context,workspace string,s Snapshot,external []pinnedSource)(sourceLockfile,error){
+	out:=sourceLockfile{SchemaVersion:1,Projects:make([]lockedProject,0,512)}
+	cmdCtx,cancel:=context.WithTimeout(ctx,10*time.Minute);defer cancel()
+	cmd:=exec.CommandContext(cmdCtx,"/usr/local/bin/repo","forall","-c",`printf '%s\t%s\t%s\n' "$REPO_PATH" "$REPO_PROJECT" "$(git rev-parse --verify HEAD)"`)
+	cmd.Dir=workspace
+	cmd.Env=[]string{"PATH=/usr/local/bin:/usr/bin:/bin","HOME=/workspace/forgeos","TMPDIR=/tmp","LANG=C.UTF-8","LC_ALL=C.UTF-8","GIT_TERMINAL_PROMPT=0","GIT_CONFIG_NOSYSTEM=1","GIT_CONFIG_GLOBAL=/dev/null"}
+	var stdout,stderr bytes.Buffer
+	cmd.Stdout=&stdout;cmd.Stderr=&stderr
+	if err:=cmd.Run();err!=nil{return out,fmt.Errorf("repo forall failed: %w",err)}
+	if stdout.Len()>2*1024*1024{return out,errors.New("source lockfile command output exceeds 2 MiB")}
+	seen:=make(map[string]struct{})
+	for _,line:=range strings.Split(strings.TrimSpace(stdout.String()),"\n"){
+		if line==""{continue}
+		fields:=strings.Split(line,"\t")
+		if len(fields)!=3||!safeRelativePath(fields[0])||fields[0]==""||fields[1]==""||!commitPattern.MatchString(fields[2]){return out,errors.New("repo forall returned an invalid project identity")}
+		if _,ok:=seen[fields[0]];ok{return out,fmt.Errorf("duplicate Android source path %q",fields[0])}
+		seen[fields[0]]=struct{}{}
+		out.Projects=append(out.Projects,lockedProject{Path:fields[0],Name:fields[1],Revision:strings.ToLower(fields[2])})
+		if len(out.Projects)>2000{return out,errors.New("Android source project count exceeds 2000")}
+	}
+	for _,source:=range external{
+		destination,err:=sourceDestination(source,s.Device.Codename);if err!=nil{return out,err}
+		if _,ok:=seen[destination];ok{return out,fmt.Errorf("external pinned source collides with synced project path %q",destination)}
+		seen[destination]=struct{}{}
+		out.Projects=append(out.Projects,lockedProject{Path:destination,Name:source.URL,Revision:strings.ToLower(source.SHA)})
+	}
+	sort.Slice(out.Projects,func(i,j int)bool{return out.Projects[i].Path<out.Projects[j].Path})
+	if len(out.Projects)==0{return out,errors.New("repo sync produced an empty source lockfile")}
+	return out,nil
+}
+
 func ctxDeadlineBudget(ctx context.Context)time.Duration{if d,ok:=ctx.Deadline();ok{return time.Until(d)};return 2*time.Hour}
 func run(ctx context.Context,dir string,timeout time.Duration,binary string,args ...string)error{
 	if timeout<=0{return errors.New("build command deadline has expired")}
