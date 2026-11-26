@@ -13,6 +13,7 @@ ExecStart=/usr/local/sbin/forgeos-guest-agent
 Restart=no
 TimeoutStartSec=0
 KillMode=control-group
+Delegate=yes
 LimitNOFILE=4096
 NoNewPrivileges=no
 PrivateDevices=no
@@ -22,7 +23,7 @@ ProtectControlGroups=no
 ProtectKernelTunables=no
 ProtectKernelModules=no
 RestrictNamespaces=no
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SETUID CAP_SETGID CAP_SYS_BOOT CAP_KILL
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_CHOWN CAP_SETUID CAP_SETGID CAP_SYS_BOOT CAP_KILL
 StandardOutput=journal
 StandardError=journal
 
