@@ -15,6 +15,11 @@ const envSchema = z.object({
   COOKIE_SECURE: z.string().default("false").transform(v => v === "true"),
   ENABLE_ANDROID_BUILDS: z.string().default("false").transform(v => v === "true"),
   BUILD_WORKER_SHARED_SECRET: z.preprocess(value => value === "" ? undefined : value, z.string().min(32).optional()),
+  SIGNING_SERVICE_URL: z.preprocess(value => value === "" ? undefined : value, z.string().url().optional()),
+  SIGNING_SERVICE_BEARER_TOKEN: z.preprocess(value => value === "" ? undefined : value, z.string().min(32).optional()),
+  SIGNING_SERVICE_CLIENT_CERT: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
+  SIGNING_SERVICE_CLIENT_KEY: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
+  SIGNING_SERVICE_CA: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
   S3_ENDPOINT: z.preprocess(value => value === "" ? undefined : value, z.string().url().optional()),
   S3_REGION: z.preprocess(value => value === "" ? undefined : value, z.string().min(1).optional()),
   S3_BUCKET: z.preprocess(value => value === "" ? undefined : value, z.string().regex(/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/).optional()),
@@ -26,6 +31,21 @@ const envSchema = z.object({
 export const config = envSchema.parse(process.env);
 if (config.NODE_ENV === "production" && !config.COOKIE_SECURE) {
   throw new Error("COOKIE_SECURE must be true in production");
+}
+const signingValues = [config.SIGNING_SERVICE_URL, config.SIGNING_SERVICE_BEARER_TOKEN,
+  config.SIGNING_SERVICE_CLIENT_CERT, config.SIGNING_SERVICE_CLIENT_KEY, config.SIGNING_SERVICE_CA];
+if (signingValues.some(Boolean) && !signingValues.every(Boolean)) {
+  throw new Error("SIGNING_SERVICE_URL, SIGNING_SERVICE_BEARER_TOKEN, SIGNING_SERVICE_CLIENT_CERT, SIGNING_SERVICE_CLIENT_KEY, and SIGNING_SERVICE_CA must be configured together");
+}
+if (config.SIGNING_SERVICE_URL) {
+  const signerUrl = new URL(config.SIGNING_SERVICE_URL);
+  if (signerUrl.protocol !== "https:" || signerUrl.username || signerUrl.password || signerUrl.search || signerUrl.hash ||
+      (signerUrl.pathname !== "" && signerUrl.pathname !== "/")) {
+    throw new Error("SIGNING_SERVICE_URL must be credential-free HTTPS at the service origin");
+  }
+}
+if (config.ENABLE_ANDROID_BUILDS && !signingValues.every(Boolean)) {
+  throw new Error("A mutually authenticated isolated signing service is required when ENABLE_ANDROID_BUILDS=true");
 }
 if (config.ENABLE_ANDROID_BUILDS && !config.BUILD_WORKER_SHARED_SECRET) {
   throw new Error("BUILD_WORKER_SHARED_SECRET (minimum 32 characters) is required when ENABLE_ANDROID_BUILDS=true");

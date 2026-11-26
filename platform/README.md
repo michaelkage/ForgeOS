@@ -195,3 +195,14 @@ This storage integration does not provide disposable worker isolation, process-t
 ## Build infrastructure security contract
 
 The required production architecture, trust boundaries, storage verification rules, worker isolation controls, cancellation semantics, signing boundary, observability requirements, and launch gates are documented in [BUILD_INFRASTRUCTURE.md](./BUILD_INFRASTRUCTURE.md). This is an implementation contract, not a claim that these services are deployed. Keep Android build submission disabled until every launch gate is satisfied.
+
+
+## Isolated release signing
+
+When Android builds are enabled, the platform requires a separate HTTPS signing service configured with mutual TLS and a bearer token. The platform verifies the guest-uploaded ZIP in private object storage, streams it to the signing host with the job ID, attempt, immutable snapshot digest, and input artifact digest, then streams the signed ZIP to a new private object key and independently verifies its stored size and SHA-256 before the build job can become successful.
+
+Configure the signer using SIGNING_SERVICE_URL, SIGNING_SERVICE_BEARER_TOKEN, SIGNING_SERVICE_CLIENT_CERT, SIGNING_SERVICE_CLIENT_KEY, and SIGNING_SERVICE_CA. The client certificate must match the exact SHA-256 pin configured on the signer host. Keep the TLS client key and token in the platform secret manager; neither is sent to the guest.
+
+The guest continues its lease heartbeat while artifact upload and signing run, and its completion HTTP client has a long bounded timeout for large artifacts and signer latency. The guest only uploads unsigned artifacts; it never receives signing credentials or private key material.
+
+The standalone signer currently uses a protected PKCS#8 key file rather than an HSM/KMS-backed signer. A real signer host, production certificates, platform adapter integration tests, and hardware-backed key isolation remain release gates. Keep ENABLE_ANDROID_BUILDS=false until those gates and privileged Firecracker end-to-end tests pass.

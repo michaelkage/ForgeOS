@@ -139,12 +139,14 @@ func Run(ctx context.Context,cfg Config)error{
 		return powerOffGuest()
 	}
 	if err:=killGuestWorkerCgroup(workerCgroup);err!=nil{_ = reportFailure(context.Background(),verified.API,job,"worker_process_cleanup_failed","Guest build worker processes could not be stopped.");return powerOffGuest()}
-	select{case err:=<-heartbeatDone:if err!=nil{_ = reportFailure(context.Background(),verified.API,job,"worker_lease_lost","The build worker lease heartbeat was lost.");return powerOffGuest()};default:}
-	cancel()
+	heartbeatStopped:=false
+	select{case heartbeatErr:=<-heartbeatDone:heartbeatStopped=true;if heartbeatErr!=nil{_ = reportFailure(context.Background(),verified.API,job,"worker_lease_lost","The build worker lease heartbeat was lost.");cancel();return powerOffGuest()};default:}
 	if err:=uploadArtifact(ctx,verified.API,job,cfg.ArtifactPath);err!=nil{
 		_ = reportFailure(context.Background(),verified.API,job,"artifact_upload_failed","The build artifact could not be uploaded and verified.")
+		cancel();if !heartbeatStopped{<-heartbeatDone}
 		return powerOffGuest()
 	}
+	cancel();if !heartbeatStopped{<-heartbeatDone}
 	return powerOffGuest()
 }
 
@@ -237,8 +239,8 @@ func uploadArtifact(ctx context.Context,api *url.URL,job RedeemedJob,path string
 	req,err:=http.NewRequestWithContext(ctx,http.MethodPut,target.String(),f);if err!=nil{return err}
 	req.ContentLength=st.Size();req.Header.Set("Content-Type","application/zip");req.Header.Set("If-None-Match","*")
 	for k,v:=range intent.RequiredHeaders{if strings.EqualFold(k,"content-type")||strings.EqualFold(k,"content-length")||strings.EqualFold(k,"if-none-match"){continue};req.Header.Set(k,v)}
-	resp,err:=newHTTPClient().Do(req);if err!=nil{return err};resp.Body.Close();if resp.StatusCode<200||resp.StatusCode>=300{return fmt.Errorf("artifact object upload failed: HTTP %d",resp.StatusCode)}
-	_,err=postJSON(ctx,api,"/api/internal/build-jobs/"+job.JobID+"/complete",job.LeaseToken,map[string]any{"workerId":job.WorkerID,"leaseToken":job.LeaseToken,"artifact":map[string]any{"sha256":digest,"sizeBytes":st.Size(),"contentType":"application/zip"}},nil)
+	resp,err:=newLongHTTPClient().Do(req);if err!=nil{return err};resp.Body.Close();if resp.StatusCode<200||resp.StatusCode>=300{return fmt.Errorf("artifact object upload failed: HTTP %d",resp.StatusCode)}
+	_,err=postJSONWithClient(ctx,api,"/api/internal/build-jobs/"+job.JobID+"/complete",job.LeaseToken,map[string]any{"workerId":job.WorkerID,"leaseToken":job.LeaseToken,"artifact":map[string]any{"sha256":digest,"sizeBytes":st.Size(),"contentType":"application/zip"}},nil,newLongHTTPClient())
 	return err
 }
 func reportFailure(ctx context.Context,api *url.URL,job RedeemedJob,code,message string)error{
@@ -246,11 +248,14 @@ func reportFailure(ctx context.Context,api *url.URL,job RedeemedJob,code,message
 	return err
 }
 func postJSON(ctx context.Context,api *url.URL,path,token string,body any,out any)(int,error){
+	return postJSONWithClient(ctx,api,path,token,body,out,newHTTPClient())
+}
+func postJSONWithClient(ctx context.Context,api *url.URL,path,token string,body any,out any,client *http.Client)(int,error){
 	raw,err:=json.Marshal(body);if err!=nil{return 0,err}
 	target:=api.ResolveReference(&url.URL{Path:path})
 	req,err:=http.NewRequestWithContext(ctx,http.MethodPost,target.String(),bytes.NewReader(raw));if err!=nil{return 0,err}
 	req.Header.Set("Authorization","Bearer "+token);req.Header.Set("Content-Type","application/json")
-	resp,err:=newHTTPClient().Do(req);if err!=nil{return 0,err};defer resp.Body.Close()
+	resp,err:=client.Do(req);if err!=nil{return 0,err};defer resp.Body.Close()
 	if resp.StatusCode<200||resp.StatusCode>=300{return resp.StatusCode,fmt.Errorf("platform request rejected: HTTP %d",resp.StatusCode)}
 	if out!=nil{if err:=json.NewDecoder(io.LimitReader(resp.Body,2*1024*1024)).Decode(out);err!=nil{return resp.StatusCode,err}}
 	return resp.StatusCode,nil
@@ -266,3 +271,5 @@ func readEd25519PublicKey(path string)(ed25519.PublicKey,error){
 	pub,ok:=key.(ed25519.PublicKey);if !ok{return nil,errors.New("pinned host public key must be Ed25519")}
 	return pub,nil
 }
+
+func newLongHTTPClient()*http.Client{return &http.Client{Timeout:45*time.Hour,CheckRedirect:func(*http.Request,[]*http.Request)error{return errors.New("redirects are not allowed")}}}
