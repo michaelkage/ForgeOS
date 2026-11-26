@@ -16,7 +16,26 @@ import (
 )
 
 var digestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
-var commitPattern = regexp.MustCompile(`^[a-fA-F0-9]{40}$`)
+var commitPattern = regexp.MustCompile(`^[a-fA-F0-9]{40}package buildworker
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/url"
+	"path"
+	"regexp"
+	"sort"
+	"strings"
+)
+
+var digestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+)
+var githubPartPattern = regexp.MustCompile("^[A-Za-z0-9_.-]+$")
 var codenamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,63}$`)
 var branchPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$`)
 
@@ -120,11 +139,12 @@ func validGitRef(value string)bool{
 }
 func safeRelativePath(value string)bool{
 	if value==""{return true}
-	if strings.HasPrefix(value,"/")||strings.Contains(value,"\\")||path.Clean(value)!=value||value=="."||value==".."||strings.HasPrefix(value,"../"){return false}
+	if len(value)>512||strings.HasPrefix(value,"/")||strings.Contains(value,"\\")||path.Clean(value)!=value||value=="."||value==".."||strings.HasPrefix(value,"../"){return false}
+	for _,r:=range value{if r<0x20||r==0x7f{return false}}
 	return true
 }
 func validGitHubURL(value string)bool{
 	u,err:=url.Parse(value);if err!=nil||u.Scheme!="https"||u.Host!="github.com"||u.User!=nil||u.RawQuery!=""||u.Fragment!=""{return false}
 	parts:=strings.Split(strings.Trim(u.Path,"/"),"/")
-	return len(parts)==2&&parts[0]!=""&&parts[1]!=""&&!strings.Contains(parts[1],"..")
+	return len(parts)==2&&githubPartPattern.MatchString(parts[0])&&githubPartPattern.MatchString(parts[1])&&!strings.Contains(parts[0],"..")&&!strings.Contains(parts[1],"..")
 }
