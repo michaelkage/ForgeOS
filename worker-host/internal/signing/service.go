@@ -147,6 +147,7 @@ func verifyOTA(file string,requireSignature bool)error{
 	}
 	if !payload&&!updater{return errors.New("OTA ZIP has no Android payload or recovery updater")}
 	if requireSignature&&(!manifest||!sf||!rsa){return errors.New("signed OTA ZIP is missing JAR signature entries")}
+	if !requireSignature&&(manifest||sf||rsa){return errors.New("input OTA must be unsigned before release signing")}
 	return nil
 }
 func hashFile(file string)(string,int64,error){
