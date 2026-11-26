@@ -64,7 +64,11 @@ func NewScheduler(server *Server,cfg SchedulerConfig,workerToken string)(*Schedu
 	if cfg.PollIntervalSeconds==0{cfg.PollIntervalSeconds=5};if cfg.PollIntervalSeconds<1||cfg.PollIntervalSeconds>60{return nil,errors.New("scheduler poll interval must be between 1 and 60 seconds")}
 	if cfg.MaxConcurrent==0{cfg.MaxConcurrent=1};if cfg.MaxConcurrent<1||cfg.MaxConcurrent>32{return nil,errors.New("scheduler concurrency must be between 1 and 32")}
 	if err:=validateResources(cfg.Resources);err!=nil{return nil,err}
-	if lr,ok:=server.cfg.Runtime.(*LinuxRuntime);ok&&lr.cfg.WorkerID!=cfg.WorkerID{return nil,errors.New("scheduler worker ID must match the host runtime worker ID")}
+	if lr,ok:=server.cfg.Runtime.(*LinuxRuntime);ok{
+		if lr.cfg.WorkerID!=cfg.WorkerID{return nil,errors.New("scheduler worker ID must match the host runtime worker ID")}
+		if _,ok:=lr.cfg.EgressPolicies[cfg.EgressPolicyID];!ok{return nil,errors.New("scheduler egress policy is not installed on the host")}
+		for _,arch:=range cfg.Architectures{digest:=cfg.ImageDigests[arch];if _,ok:=lr.cfg.ImagePaths[digest];!ok{return nil,fmt.Errorf("worker image %s is not installed on the host",digest)};if _,ok:=lr.cfg.KernelPaths[arch];!ok{return nil,fmt.Errorf("kernel for %s is not installed on the host",arch)}}
+	}
 	return &Scheduler{server:server,cfg:cfg,api:api,token:workerToken,client:&http.Client{Timeout:20*time.Second,CheckRedirect:func(*http.Request,[]*http.Request)error{return errors.New("scheduler HTTP redirects are forbidden")}}},nil
 }
 
