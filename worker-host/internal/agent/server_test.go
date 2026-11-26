@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
