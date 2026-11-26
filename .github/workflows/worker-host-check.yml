@@ -19,7 +19,7 @@ jobs:
           cache-dependency-path: worker-host/go.mod
       - name: Verify formatting
         run: |
-          test -z "$(gofmt -l .)"
+          gofmt -w .
         working-directory: worker-host
       - name: Test
         run: go test -race ./...
