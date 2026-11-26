@@ -9,7 +9,7 @@ This is a separate service intended for a dedicated signing host. It is not part
 - Also require a separate bearer token. Deliver both client key material and the token only to the platform API's signing adapter.
 - Firewall the listener so only the platform API can reach it.
 - Keep the release certificate and PKCS#8 private key on the signing host. The service verifies they are regular root-owned files and rejects group/world-writable key material.
-- Keep the Java runtime, signapk.jar, and release certificate root-owned and non-writable. Install a reviewed, version-pinned Android signapk.jar; record its SHA-256 in the deployment inventory.
+- Keep the Java runtime, signapk.jar, and release certificate root-owned and non-writable. The service requires and verifies SHA-256 pins for signapk.jar, the release certificate, and the PKCS#8 private key before it starts.
 - Use a dedicated service account, a private 0700 work directory, encrypted storage, and the supplied systemd hardening unit.
 - The audit ledger is hash-chained JSONL. Set the ledger file's Linux append-only attribute (chattr +a) after first creation and ship a copy to an independently administered append-only log store. Do not allow the signing service account to clear that attribute.
 
@@ -32,7 +32,7 @@ A job attempt can be reserved only once. A completed identical request returns t
 1. Provision a dedicated Linux machine on an isolated management network. It must not be the Firecracker host.
 2. Create forgeos-signing user/group and an encrypted filesystem mounted at /var/lib/forgeos-signing, mode 0700, owned by that account.
 3. Install a pinned JDK, reviewed signapk.jar, and the release certificate. Verify checksums before deployment.
-4. Provision the TLS server key/certificate and platform client CA. Install the release PKCS#8 key as root-owned and readable only by the signing service group (for example mode 0440); never place it in the repository, guest image, host-agent filesystem, or platform database.
+4. Provision the TLS server key/certificate and platform client CA. Install the release PKCS#8 key as root-owned and readable only by the signing service group (for example mode 0440); never place it in the repository, guest image, host-agent filesystem, or platform database. Compute and set the exact SHA-256 digests for signapk.jar, the release certificate, and the private key in the signing environment file.
 5. Install the signing environment file as root-owned mode 0640. Replace all example values and provision a high-entropy bearer token through the secret manager.
 6. Build the service from worker-host with CGO_ENABLED=0, install it at /usr/local/sbin/forgeos-signing-service, and install the systemd unit.
 7. Restrict firewall ingress to the platform API's exact private address. The sample unit allows 10.0.0.5/32; replace it with the real orchestrator address.
