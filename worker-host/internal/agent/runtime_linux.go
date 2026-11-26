@@ -163,10 +163,10 @@ func (r *LinuxRuntime) Inspect(id string)(string,error){
 	if meta.Phase!="running"||r.terminating[id]{return "unknown",nil}
 	if time.Now().After(meta.Deadline){meta.Phase="terminating";r.terminating[id]=true;_ = r.writeMeta(meta);if err:=r.cleanup(meta);err!=nil{return "unknown",err};return "stopped",nil}
 	procs,err:=os.ReadFile(filepath.Join(meta.CgroupPath,"cgroup.procs"));if err!=nil{return "unknown",err}
-	if len(bytes.TrimSpace(procs))==0{if err:=r.cleanup(meta);err!=nil{return "unknown",err};return "stopped",nil}
+	if len(bytes.TrimSpace(procs))==0{meta.Phase="terminating";r.terminating[id]=true;_ = r.writeMeta(meta);if err:=r.cleanup(meta);err!=nil{return "unknown",err};return "stopped",nil}
 	state,err:=r.firecrackerState(meta);if err!=nil{return "unknown",nil}
 	if state=="Running"{return "running",nil}
-	if err:=r.cleanup(meta);err!=nil{return "unknown",err};return "stopped",nil
+	meta.Phase="terminating";r.terminating[id]=true;_ = r.writeMeta(meta);if err:=r.cleanup(meta);err!=nil{return "unknown",err};return "stopped",nil
 }
 
 func (r *LinuxRuntime) Terminate(id string)error{
@@ -466,7 +466,7 @@ func (r *LinuxRuntime) SweepExpired()error{
 	r.mu.Lock();defer r.mu.Unlock()
 	if err:=r.moveKvmPitThreads();err!=nil{
 		entries,_:=os.ReadDir(r.cfg.StateDir)
-		for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};if m,e:=r.readMeta(entry.Name());e==nil{_ = r.cleanup(m)}}
+		for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};if m,e:=r.readMeta(entry.Name());e==nil{m.Phase="terminating";r.terminating[m.ID]=true;_ = r.writeMeta(m);_ = r.cleanup(m)}}
 		return fmt.Errorf("KVM timer thread could not be bound to VM CPU cgroup; all active VMs were torn down: %w",err)
 	}
 	entries,e:=os.ReadDir(r.cfg.StateDir);if os.IsNotExist(e){return nil};if e!=nil{return e};var errs []error
