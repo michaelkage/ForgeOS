@@ -19,3 +19,8 @@ Build the guest agent for the guest architecture with CGO disabled. Pin the work
 The guest rootfs must include systemd with cgroup v2 delegation, the pids controller, ext4 mount support, networking, CA certificates, and the dependencies required by the build worker. Configure /etc/resolv.conf with the public DNS resolvers listed in the matching host egress policy. The guest kernel must support AF_VSOCK and expose cgroup v2. The host attaches the encrypted workspace as /dev/vdb; the guest agent mounts it at /workspace.
 
 The guest service must not restart after its one job. The VM is disposable: after the guest reports success/failure, the guest powers off and the host independently destroys the VM and its encrypted disk.
+
+
+## Build worker release gate
+
+The `forgeos-build-worker` executable is a separately versioned guest artifact and is not produced by the host-agent package. Do not enable the scheduler or Android builds until an audited build-worker release is built, pinned by digest, and installed in the immutable guest image. The guest agent will fail closed if the worker executable is missing or not root-owned and immutable.
