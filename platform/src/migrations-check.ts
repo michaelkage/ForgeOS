@@ -12,7 +12,8 @@ try {
     new URL("../migrations/002_device_source_provenance.sql", import.meta.url),
     new URL("../migrations/003_build_queue.sql", import.meta.url),
     new URL("../migrations/004_artifact_storage.sql", import.meta.url),
-    new URL("../migrations/005_build_job_events.sql", import.meta.url)
+    new URL("../migrations/005_build_job_events.sql", import.meta.url),
+    new URL("../migrations/006_guest_bootstrap_credentials.sql", import.meta.url)
   ];
   for (let pass = 0; pass < 2; pass++) {
     for (const migration of migrations) {
@@ -68,6 +69,12 @@ try {
   assert.ok(eventTable.rows[0]?.name, "Missing append-only build event table");
   const eventTrigger = await client.query("SELECT tgname FROM pg_trigger WHERE tgrelid='forgeos_build_job_events'::regclass AND NOT tgisinternal");
   assert.ok(eventTrigger.rows.some(row => row.tgname === "forgeos_build_job_events_append_only"));
+  const bootstrapColumns = await client.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='forgeos_guest_bootstrap_credentials'");
+  const bootstrapNames = new Set(bootstrapColumns.rows.map(row => row.column_name));
+  for (const required of ["build_job_id", "attempt", "worker_id", "credential_sha256", "expires_at"]) {
+    assert.ok(bootstrapNames.has(required), "Missing guest bootstrap credential column: " + required);
+  }
+  assert.ok(!bootstrapNames.has("credential"), "Raw guest bootstrap credentials must never be persisted");
 } finally {
   await client.end();
 }
