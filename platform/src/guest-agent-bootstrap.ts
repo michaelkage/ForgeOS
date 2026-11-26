@@ -97,7 +97,7 @@ export function verifyGuestBootstrap(
     throw new TypeError("Guest bootstrap API endpoint is invalid");
   }
   if (apiBaseUrl.protocol !== "https:" || apiBaseUrl.username || apiBaseUrl.password ||
-      apiBaseUrl.search || apiBaseUrl.hash) {
+      apiBaseUrl.pathname !== "/" && apiBaseUrl.pathname !== "" || apiBaseUrl.search || apiBaseUrl.hash) {
     throw new TypeError("Guest bootstrap API endpoint must be a credential-free HTTPS URL");
   }
   if (typeof payload.bootstrapCredential !== "string" ||
