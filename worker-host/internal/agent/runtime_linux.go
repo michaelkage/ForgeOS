@@ -413,6 +413,15 @@ func (r *LinuxRuntime) firecrackerState(m runtimeMeta)(string,error){
 	return out.State,err
 }
 
+func killRemainingCgroupProcesses(cgroupProcs string)error{
+	remaining,err:=os.ReadFile(cgroupProcs);if err!=nil{return fmt.Errorf("read Firecracker cgroup after kill: %w",err)}
+	if len(bytes.TrimSpace(remaining))==0{return nil}
+	for _,raw:=range strings.Fields(string(remaining)){pid,_:=strconv.Atoi(raw);if pid>1{_ = syscall.Kill(pid,syscall.SIGKILL)}}
+	deadline:=time.Now().Add(5*time.Second)
+	for time.Now().Before(deadline){remaining,err=os.ReadFile(cgroupProcs);if err!=nil{return fmt.Errorf("recheck Firecracker cgroup after kill: %w",err)};if len(bytes.TrimSpace(remaining))==0{return nil};time.Sleep(50*time.Millisecond)}
+	return errors.New("Firecracker processes remain; refusing to detach their resources")
+}
+
 func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 	cgroupProcs:=filepath.Join(m.CgroupPath,"cgroup.procs")
 	targetPIDs:=map[int]bool{};if m.FirecrackerPID>1{targetPIDs[m.FirecrackerPID]=true};if m.FirecrackerPID==0{if raw,e:=os.ReadFile(filepath.Join(m.RootDir,"firecracker.pid"));e==nil{if pid,e:=strconv.Atoi(strings.TrimSpace(string(raw)));e==nil&&pid>1&&r.processMatchesInstance(m,pid){targetPIDs[pid]=true;m.FirecrackerPID=pid}}};if b,e:=os.ReadFile(cgroupProcs);e==nil{for _,raw:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(raw);if pid>1{targetPIDs[pid]=true}}}
@@ -422,14 +431,7 @@ func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 		}
 		deadline:=time.Now().Add(15*time.Second)
 		for time.Now().Before(deadline){b,e:=os.ReadFile(cgroupProcs);if e!=nil||len(bytes.TrimSpace(b))==0{break};time.Sleep(100*time.Millisecond)}
-		if err:=func()error{
-			remaining,readErr:=os.ReadFile(cgroupProcs);if readErr!=nil||len(bytes.TrimSpace(remaining))==0{return nil}
-			for _,raw:=range strings.Fields(string(remaining)){pid,_:=strconv.Atoi(raw);if pid>1{_ = syscall.Kill(pid,syscall.SIGKILL)}}
-			deadline:=time.Now().Add(5*time.Second)
-			for time.Now().Before(deadline){remaining,readErr=os.ReadFile(cgroupProcs);if readErr!=nil||len(bytes.TrimSpace(remaining))==0{break};time.Sleep(50*time.Millisecond)}
-			remaining,readErr=os.ReadFile(cgroupProcs);if readErr==nil&&len(bytes.TrimSpace(remaining))>0{return errors.New("Firecracker processes remain; refusing to detach their resources")}
-			return nil
-		}();err!=nil{return err}
+		if cleanupErr:=killRemainingCgroupProcesses(cgroupProcs);cleanupErr!=nil{return cleanupErr}
 	}
 	if m.FirecrackerPID>1&&r.processMatchesInstance(m,m.FirecrackerPID){
 		_ = syscall.Kill(m.FirecrackerPID,syscall.SIGKILL)
