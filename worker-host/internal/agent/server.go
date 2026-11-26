@@ -203,7 +203,7 @@ func (s *Server) saveState() error {
 
 func validateRequest(r ProvisionRequest) error {
 	if !uuidPattern.MatchString(r.RequestID)||!uuidPattern.MatchString(r.JobID)||r.Attempt<1||r.Attempt>20{return errors.New("invalid job identity")}
-	if r.Architecture!="x86_64"&&r.Architecture!="arm64"{return errors.New("unsupported architecture")}
+	if r.Architecture!="x86_64"&&r.Architecture!="arm64"{return errors.New("unsupported architecture")};if r.WorkerID!=""&&!workerPattern.MatchString(r.WorkerID){return errors.New("invalid worker identity")}
 	if r.ROMBase!="lineage"&&r.ROMBase!="crdroid"{return errors.New("unsupported ROM base")}
 	if !digestPattern.MatchString(r.ImageDigest)||!workerPattern.MatchString(r.EgressPolicyID){return errors.New("invalid image or egress policy")}
 	if len(r.BootstrapCredential)<40||len(r.BootstrapCredential)>128{return errors.New("invalid bootstrap credential")}
