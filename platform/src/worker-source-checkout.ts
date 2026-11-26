@@ -16,6 +16,10 @@ export interface CheckoutOptions {
   runCommand?: typeof runSupervisedCommand;
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw signal.reason ?? new Error("Source checkout cancelled");
+}
+
 function assertContained(root: string, candidate: string): void {
   const rel = relative(root, candidate);
   if (!rel || rel === "." || rel.startsWith(".." + sep) || rel === ".." || isAbsolute(rel)) {
@@ -30,6 +34,7 @@ async function runGit(
   timeoutMs: number,
   signal?: AbortSignal
 ): Promise<SupervisedCommandResult> {
+  throwIfAborted(signal);
   const result = await runner("git", args, {
     cwd,
     timeoutMs,
@@ -44,6 +49,7 @@ async function runGit(
       GCM_INTERACTIVE: "Never"
     }
   });
+  throwIfAborted(signal);
   if (result.exitCode !== 0) {
     throw new Error("Pinned source git command failed (" + args[0] + "): " + result.stderr.slice(-4096));
   }
@@ -67,15 +73,21 @@ export async function checkoutPinnedSources(
     throw new RangeError("commandTimeoutMs must be between 1 ms and 2 hours");
   }
 
+  throwIfAborted(options.signal);
   await mkdir(options.workspace, { recursive: true, mode: 0o700 });
+  throwIfAborted(options.signal);
   const workspace = await realpath(options.workspace);
+  throwIfAborted(options.signal);
   const home = resolve(workspace, ".git-home");
   await mkdir(home, { recursive: true, mode: 0o700 });
+  throwIfAborted(options.signal);
 
   const manifestPath = resolve(workspace, snapshot.manifest.path);
   assertContained(workspace, manifestPath);
   await mkdir(dirname(manifestPath), { recursive: true, mode: 0o700 });
+  throwIfAborted(options.signal);
   await writeFile(manifestPath, snapshot.manifest.content, { encoding: "utf8", flag: "wx", mode: 0o600 });
+  throwIfAborted(options.signal);
 
   const sources: PinnedWorkerSource[] = [
     {
@@ -91,11 +103,12 @@ export async function checkoutPinnedSources(
 
   const checkouts: PinnedCheckout[] = [];
   for (let index = 0; index < sources.length; index += 1) {
-    if (options.signal?.aborted) throw options.signal.reason ?? new Error("Source checkout cancelled");
+    throwIfAborted(options.signal);
     const source = sources[index]!;
     const repositoryDirectory = resolve(workspace, "sources", String(index).padStart(3, "0"));
     assertContained(workspace, repositoryDirectory);
     await mkdir(dirname(repositoryDirectory), { recursive: true, mode: 0o700 });
+    throwIfAborted(options.signal);
 
     await runGit(runner, ["clone", "--no-checkout", "--filter=blob:none", "--no-tags", "--", source.repositoryUrl, repositoryDirectory],
       workspace, timeoutMs, options.signal);
@@ -115,5 +128,6 @@ export async function checkoutPinnedSources(
     checkouts.push({ source, repositoryDirectory, sourceDirectory });
   }
 
+  throwIfAborted(options.signal);
   return { manifestPath, checkouts };
 }
