@@ -148,7 +148,9 @@ export async function signUploadedArtifact(input: SignedArtifactRequest): Promis
     );
     if (signed.statusCode !== 200) {
       const detail = await readErrorResponse(signed);
-      throw new Error("signing_service_unavailable: signer returned HTTP " + signed.statusCode + (detail ? " (" + detail + ")" : ""));
+      const prefix = signed.statusCode >= 400 && signed.statusCode < 500
+        ? "artifact_signing_rejected: " : "signing_service_unavailable: ";
+      throw new Error(prefix + "signer returned HTTP " + signed.statusCode + (detail ? " (" + detail + ")" : ""));
     }
     const sizeBytes = Number(signed.headers["content-length"]);
     const sha256 = signed.headers["x-forgeos-signed-sha256"];
@@ -160,11 +162,19 @@ export async function signUploadedArtifact(input: SignedArtifactRequest): Promis
     }
     const objectKey = "artifacts/" + input.userId + "/" + input.jobId + "/" + input.attempt + "/" + randomUUID() + ".zip";
     const uploadUrl = createArtifactUploadUrl(objectKey, sizeBytes, 600);
-    await uploadSignedOutput(uploadUrl, sizeBytes, signed);
-    await verifyUploadedArtifact(objectKey, sizeBytes, sha256);
+    try {
+      await uploadSignedOutput(uploadUrl, sizeBytes, signed);
+    } catch (error) {
+      throw new Error("artifact_storage_unavailable: " + (error instanceof Error ? error.message : "signed artifact upload failed"));
+    }
+    try {
+      await verifyUploadedArtifact(objectKey, sizeBytes, sha256);
+    } catch (error) {
+      throw new Error("signed_artifact_verification_failed: " + (error instanceof Error ? error.message : "signed artifact verification failed"));
+    }
     return { objectKey, sha256, sizeBytes };
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith("signing_service_unavailable:")) throw error;
+    if (error instanceof Error && /^(signing_service_unavailable:|artifact_signing_rejected:|artifact_storage_unavailable:|signed_artifact_verification_failed:)/.test(error.message)) throw error;
     throw new Error("signing_service_unavailable: " + (error instanceof Error ? error.message : "signer request failed"));
   } finally {
     agent.destroy();
