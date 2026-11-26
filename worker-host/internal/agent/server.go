@@ -180,6 +180,7 @@ func (s *Server) handleTerminate(w http.ResponseWriter,r *http.Request) {
 	if dec.Decode(&req)!=nil || !uuidPattern.MatchString(req.RequestID) || strings.TrimSpace(req.Reason)=="" || len(req.Reason)>200 {writeError(w,400,"invalid_termination_request");return}
 	s.mu.Lock();_,ok:=s.instances[id];s.mu.Unlock();if !ok{writeError(w,404,"worker_not_found");return}
 	if err:=s.cfg.Runtime.Terminate(id);err!=nil{writeError(w,503,"worker_termination_failed");return}
+	state,err:=s.cfg.Runtime.Inspect(id);if err!=nil||state!="stopped"{writeError(w,503,"worker_teardown_unconfirmed");return}
 	payload:=TerminatePayload{Provider:providerID,InstanceID:id,Accepted:true,RequestID:req.RequestID}
 	sig,err:=signCanonical(s.cfg.SigningKey,payload);if err!=nil{writeError(w,500,"termination_signing_failed");return}
 	writeJSON(w,200,TerminateResponse{Provider:payload.Provider,InstanceID:id,Accepted:true,RequestID:req.RequestID,Signature:sig})
