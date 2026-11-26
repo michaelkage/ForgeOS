@@ -8,6 +8,7 @@ const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString(
 const now = Date.parse("2026-11-26T12:00:00.000Z");
 const expected = {
   jobId: "123e4567-e89b-42d3-a456-426614174000",
+  workerId: "forgeos-worker-01",
   attempt: 1,
   architecture: "x86_64" as const,
   imageDigest: "sha256:" + "a".repeat(64)
@@ -29,6 +30,7 @@ function envelope(overrides: Record<string, unknown> = {}) {
     nonce: "123e4567-e89b-42d3-a456-426614174099",
     issuedAt: new Date(now).toISOString(),
     expiresAt: new Date(now + 120_000).toISOString(),
+    resources: { cpuCores: 4, memoryMiB: 8192, diskGiB: 200, processLimit: 2048, wallTimeSeconds: 3600 },
     ...overrides
   };
   return {
@@ -40,6 +42,7 @@ function envelope(overrides: Record<string, unknown> = {}) {
 test("accepts a correctly signed one-job guest bootstrap envelope", () => {
   const result = verifyGuestBootstrap(envelope(), publicKeyPem, expected, now);
   assert.equal(result.jobId, expected.jobId);
+  assert.equal(result.workerId, expected.workerId);
   assert.equal(result.apiBaseUrl.href, "https://forgeos.example/");
   assert.equal(result.bootstrapCredential, "c".repeat(64));
 });

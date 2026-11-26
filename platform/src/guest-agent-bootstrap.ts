@@ -3,6 +3,7 @@ import { verify as verifySignature } from "node:crypto";
 export interface GuestBootstrapPayload {
   schemaVersion: 1;
   jobId: string;
+  workerId: string;
   attempt: number;
   architecture: "x86_64" | "arm64";
   imageDigest: string;
@@ -11,6 +12,7 @@ export interface GuestBootstrapPayload {
   nonce: string;
   issuedAt: string;
   expiresAt: string;
+  resources: { cpuCores: number; memoryMiB: number; diskGiB: number; processLimit: number; wallTimeSeconds: number };
 }
 
 export interface GuestBootstrapEnvelope {
@@ -20,6 +22,7 @@ export interface GuestBootstrapEnvelope {
 
 export interface VerifiedGuestBootstrap {
   jobId: string;
+  workerId: string;
   attempt: number;
   architecture: "x86_64" | "arm64";
   imageDigest: string;
@@ -27,6 +30,7 @@ export interface VerifiedGuestBootstrap {
   bootstrapCredential: string;
   nonce: string;
   expiresAt: number;
+  resources: GuestBootstrapPayload["resources"];
 }
 
 function canonicalJson(value: unknown): string {
@@ -57,7 +61,7 @@ function validUuid(value: unknown): value is string {
 export function verifyGuestBootstrap(
   input: unknown,
   pinnedHostPublicKeyPem: string,
-  expected: { jobId: string; attempt: number; imageDigest: string; architecture: "x86_64" | "arm64" },
+  expected: { jobId: string; workerId: string; attempt: number; imageDigest: string; architecture: "x86_64" | "arm64" },
   now = Date.now()
 ): VerifiedGuestBootstrap {
   if (!isRecord(input) || !isRecord(input.payload) || typeof input.signature !== "string") {
@@ -73,12 +77,18 @@ export function verifyGuestBootstrap(
     throw new Error("Guest bootstrap signature verification failed");
   }
   if (payload.schemaVersion !== 1 || !validUuid(payload.jobId) ||
+      typeof payload.workerId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(payload.workerId) ||
       !Number.isSafeInteger(payload.attempt) || payload.attempt < 1 || payload.attempt > 20 ||
       (payload.architecture !== "x86_64" && payload.architecture !== "arm64") ||
-      !/^sha256:[a-f0-9]{64}$/.test(payload.imageDigest)) {
+      !/^sha256:[a-f0-9]{64}$/.test(payload.imageDigest) || !isRecord(payload.resources) ||
+      !Number.isSafeInteger(payload.resources.cpuCores) || payload.resources.cpuCores < 2 || payload.resources.cpuCores > 128 ||
+      !Number.isSafeInteger(payload.resources.memoryMiB) || payload.resources.memoryMiB < 4096 || payload.resources.memoryMiB > 1048576 ||
+      !Number.isSafeInteger(payload.resources.diskGiB) || payload.resources.diskGiB < 100 || payload.resources.diskGiB > 4096 ||
+      !Number.isSafeInteger(payload.resources.processLimit) || payload.resources.processLimit < 128 || payload.resources.processLimit > 65536 ||
+      !Number.isSafeInteger(payload.resources.wallTimeSeconds) || payload.resources.wallTimeSeconds < 60 || payload.resources.wallTimeSeconds > 172800) {
     throw new TypeError("Guest bootstrap identity or schema is invalid");
   }
-  if (payload.jobId !== expected.jobId || payload.attempt !== expected.attempt ||
+  if (payload.jobId !== expected.jobId || payload.workerId !== expected.workerId || payload.attempt !== expected.attempt ||
       payload.architecture !== expected.architecture || payload.imageDigest !== expected.imageDigest) {
     throw new Error("Guest bootstrap is bound to a different job, attempt, architecture, or image");
   }
@@ -87,14 +97,14 @@ export function verifyGuestBootstrap(
     throw new TypeError("Guest bootstrap API endpoint is invalid");
   }
   if (apiBaseUrl.protocol !== "https:" || apiBaseUrl.username || apiBaseUrl.password ||
-      apiBaseUrl.search || apiBaseUrl.hash) {
+      apiBaseUrl.pathname !== "/" && apiBaseUrl.pathname !== "" || apiBaseUrl.search || apiBaseUrl.hash) {
     throw new TypeError("Guest bootstrap API endpoint must be a credential-free HTTPS URL");
   }
   if (typeof payload.bootstrapCredential !== "string" ||
-      payload.bootstrapCredential.length < 32 || payload.bootstrapCredential.length > 4096) {
+      !/^[A-Za-z0-9_-]{40,64}$/.test(payload.bootstrapCredential)) {
     throw new TypeError("Guest bootstrap credential is invalid");
   }
-  if (typeof payload.nonce !== "string" || !/^[0-9a-f-]{36}$/i.test(payload.nonce)) {
+  if (!validUuid(payload.nonce)) {
     throw new TypeError("Guest bootstrap nonce is invalid");
   }
   const issuedAt = Date.parse(payload.issuedAt);
@@ -106,12 +116,14 @@ export function verifyGuestBootstrap(
   }
   return {
     jobId: payload.jobId,
+    workerId: payload.workerId,
     attempt: payload.attempt,
     architecture: payload.architecture,
     imageDigest: payload.imageDigest,
     apiBaseUrl,
     bootstrapCredential: payload.bootstrapCredential,
     nonce: payload.nonce,
-    expiresAt
+    expiresAt,
+    resources: payload.resources
   };
 }

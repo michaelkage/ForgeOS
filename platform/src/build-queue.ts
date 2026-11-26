@@ -402,6 +402,19 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  app.get("/api/internal/build-jobs/:id/status", async (request, reply) => {
+    if (!workerAuthorized(request, reply)) return;
+    const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
+    if (!id.success) return reply.code(400).send({ error: "invalid_build_job_id" });
+    const result = await query(
+      `SELECT id,status,attempts,worker_id AS "workerId",lease_expires_at AS "leaseExpiresAt"
+       FROM forgeos_build_jobs WHERE id=$1`,
+      [id.data]
+    );
+    if (!result.rowCount) return reply.code(404).send({ error: "build_job_not_found" });
+    return { job: result.rows[0] };
+  });
+
   app.post("/api/internal/build-jobs/:id/heartbeat", async (request, reply) => {
     const id = z.string().uuid().safeParse((request.params as { id?: string }).id);
     const parsed = heartbeatSchema.safeParse(request.body);

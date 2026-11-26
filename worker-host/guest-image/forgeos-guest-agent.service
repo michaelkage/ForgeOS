@@ -1,0 +1,31 @@
+[Unit]
+Description=ForgeOS one-job isolated build guest agent
+After=network.target
+ConditionPathIsExecutable=/usr/local/sbin/forgeos-guest-agent
+ConditionPathIsExecutable=/usr/local/bin/forgeos-build-worker
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/forgeos/guest-agent.env
+ExecStart=/usr/local/sbin/forgeos-guest-agent
+Restart=no
+TimeoutStartSec=0
+KillMode=control-group
+Delegate=yes
+LimitNOFILE=4096
+NoNewPrivileges=no
+PrivateDevices=no
+PrivateNetwork=no
+PrivateMounts=no
+ProtectControlGroups=no
+ProtectKernelTunables=no
+ProtectKernelModules=no
+RestrictNamespaces=no
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_CHOWN CAP_SETUID CAP_SETGID CAP_SYS_BOOT CAP_KILL
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
