@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=root
 Group=root
+Slice=forgeos-host.slice
 EnvironmentFile=/etc/forgeos/host-agent.env
 WorkingDirectory=/var/lib/forgeos-host-agent
 StateDirectory=forgeos-host-agent
