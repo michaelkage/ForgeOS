@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -111,6 +110,8 @@ func Run(ctx context.Context,cfg Config)error{
 	snapshot,err:=canonicalRaw(job.Snapshot);if err!=nil{return err}
 	sum:=sha256.Sum256(snapshot)
 	if "sha256:"+hex.EncodeToString(sum[:])!=job.SnapshotSHA256{return errors.New("immutable build snapshot digest mismatch")}
+	if _,err:=conn.Write([]byte("BOOTSTRAP_REDEEMED\\n"));err!=nil{return errors.New("unable to acknowledge redeemed guest bootstrap")}
+	_ = conn.Close()
 	workspace:="/workspace/forgeos"
 	if err:=os.MkdirAll(workspace,0700);err!=nil{return err}
 	snapshotPath:=filepath.Join(workspace,"snapshot.json")
