@@ -120,7 +120,7 @@ func (s *Scheduler) runJob(ctx context.Context,job claimedJob){
 	requestID,err:=randomUUID();if err!=nil{fail("host_request_id_failed","The host could not create a provisioning request ID.");return}
 	req:=ProvisionRequest{RequestID:requestID,WorkerID:s.cfg.WorkerID,JobID:job.ID,Attempt:job.Attempts,Architecture:architecture,ROMBase:romBase,ImageDigest:s.cfg.ImageDigests[architecture],Resources:s.cfg.Resources,EgressPolicyID:s.cfg.EgressPolicyID,BootstrapCredential:credential.Credential}
 	instance,err:=s.server.ProvisionLocal(req)
-	if err!=nil{fail("host_provisioning_failed","The isolated Firecracker worker could not be provisioned.");return}
+	if err!=nil{if instance.InstanceID!=""{s.terminateUntilStopped(instance.InstanceID)};fail("host_provisioning_failed","The isolated Firecracker worker could not be provisioned.");return}
 	s.monitorJob(ctx,job,instance)
 }
 
