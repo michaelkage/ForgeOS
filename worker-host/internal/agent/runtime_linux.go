@@ -188,7 +188,7 @@ func (r *LinuxRuntime) preflight()error{
 	if err:=verifyHostHardening();err!=nil{return err}
 	if err:=os.MkdirAll("/run/netns",0755);err!=nil{return err};if err:=verifyRootPath("/run/netns");err!=nil{return err};if err:=verifyNetworkPools();err!=nil{return err}
 	if err:=r.ensureDelegatedCgroupParent();err!=nil{return err}
-	for _,p:=range []string{r.cfg.JailerPath,r.cfg.FirecrackerPath,"/usr/sbin/cryptsetup","/usr/sbin/mkfs.ext4","/usr/bin/mount","/usr/bin/umount","/usr/sbin/ip","/usr/sbin/nft","/usr/bin/setfacl","/usr/bin/getfacl"}{if _,err:=os.Stat(p);err!=nil{return fmt.Errorf("required host executable %s unavailable",p)}}
+	for _,p:=range []string{r.cfg.JailerPath,r.cfg.FirecrackerPath,"/usr/sbin/cryptsetup","/usr/bin/fallocate","/usr/sbin/mkfs.ext4","/usr/bin/mount","/usr/bin/umount","/usr/sbin/ip","/usr/sbin/nft","/usr/bin/setfacl","/usr/bin/getfacl"}{if _,err:=os.Stat(p);err!=nil{return fmt.Errorf("required host executable %s unavailable",p)}}
 	return nil
 }
 
@@ -277,7 +277,7 @@ func (r *LinuxRuntime) createCgroup(m runtimeMeta,res Resources)error{
 
 func (r *LinuxRuntime) createEncryptedDisk(m runtimeMeta,diskGiB int,baseImage string)error{
 	f,err:=os.OpenFile(m.DiskPath,os.O_CREATE|os.O_EXCL|os.O_RDWR,0600);if err!=nil{return err}
-	if err=f.Truncate(int64(diskGiB)*1024*1024*1024);err!=nil{_ = f.Close();return err};_ = f.Close()
+	if err=f.Truncate(int64(diskGiB)*1024*1024*1024);err!=nil{_ = f.Close();return err};_ = f.Close();if err:=run(context.Background(),"/usr/bin/fallocate","-l",strconv.FormatInt(int64(diskGiB)*1024*1024*1024,10),m.DiskPath);err!=nil{return fmt.Errorf("reserve physical encrypted disk capacity: %w",err)}
 	key:=make([]byte,64);if _,err:=rand.Read(key);err!=nil{return err};defer func(){for i:=range key{key[i]=0}}()
 	if err:=runInput(context.Background(),"/usr/sbin/cryptsetup",key,"luksFormat","--batch-mode","--type","luks2","--key-file","-",m.DiskPath);err!=nil{return fmt.Errorf("encrypt ephemeral disk: %w",err)}
 	if err:=runInput(context.Background(),"/usr/sbin/cryptsetup",key,"open","--key-file","-",m.DiskPath,m.Mapper);err!=nil{return err}
@@ -454,7 +454,7 @@ func (r *LinuxRuntime) verifyCgroupLimits(m runtimeMeta)error{
 	swap,err:=read("memory.swap.max");if err!=nil||swap!="0"{return errors.New("VM swap is not disabled")}
 	oom,err:=read("memory.oom.group");if err!=nil||oom!="1"{return errors.New("VM memory OOM group is not enabled")}
 	pids,err:=read("pids.max");if err!=nil||pids!=strconv.Itoa(m.Resources.ProcessLimit){return errors.New("VM host process limit is not enforced")}
-	st,err:=os.Stat(m.DiskPath);if err!=nil{return err};if st.Size()!=int64(m.Resources.DiskGiB)*1024*1024*1024{return errors.New("encrypted VM disk size does not match its hard quota")};mounted,err:=isMountPoint(m.JailDir);if err!=nil||!mounted{return errors.New("encrypted VM workspace is not mounted")};if _,err:=os.Stat(filepath.Join("/dev/mapper",m.Mapper));err!=nil{return errors.New("encrypted VM block mapping is unavailable")};if !m.Deadline.After(m.CreatedAt)||m.Deadline.Sub(m.CreatedAt)>time.Duration(m.Resources.WallTimeSeconds)*time.Second+time.Second{return errors.New("VM wall-time deadline is invalid")};mapperInfo,err:=os.Stat(filepath.Join("/dev/mapper",m.Mapper));if err!=nil{return errors.New("encrypted VM block device is unavailable")};sys,ok:=mapperInfo.Sys().(*syscall.Stat_t);if !ok{return errors.New("cannot identify encrypted VM block device")};major,minor:=unixMajor(uint64(sys.Rdev)),unixMinor(uint64(sys.Rdev));if _,err:=os.Stat(fmt.Sprintf("/sys/dev/block/%d:%d",major,minor));err!=nil{return errors.New("encrypted VM block device is not registered in sysfs")}
+	st,err:=os.Stat(m.DiskPath);if err!=nil{return err};if st.Size()!=int64(m.Resources.DiskGiB)*1024*1024*1024{return errors.New("encrypted VM disk size does not match its hard quota")};if sys,ok:=st.Sys().(*syscall.Stat_t);!ok||sys.Blocks*512<st.Size(){return errors.New("encrypted VM disk capacity is not physically reserved")};mounted,err:=isMountPoint(m.JailDir);if err!=nil||!mounted{return errors.New("encrypted VM workspace is not mounted")};if _,err:=os.Stat(filepath.Join("/dev/mapper",m.Mapper));err!=nil{return errors.New("encrypted VM block mapping is unavailable")};if !m.Deadline.After(m.CreatedAt)||m.Deadline.Sub(m.CreatedAt)>time.Duration(m.Resources.WallTimeSeconds)*time.Second+time.Second{return errors.New("VM wall-time deadline is invalid")};mapperInfo,err:=os.Stat(filepath.Join("/dev/mapper",m.Mapper));if err!=nil{return errors.New("encrypted VM block device is unavailable")};sys,ok:=mapperInfo.Sys().(*syscall.Stat_t);if !ok{return errors.New("cannot identify encrypted VM block device")};major,minor:=unixMajor(uint64(sys.Rdev)),unixMinor(uint64(sys.Rdev));if _,err:=os.Stat(fmt.Sprintf("/sys/dev/block/%d:%d",major,minor));err!=nil{return errors.New("encrypted VM block device is not registered in sysfs")}
 	ioMax,err:=read("io.max");if err!=nil{return err};expected:=fmt.Sprintf("%d:%d rbps=%d wbps=%d riops=1000 wiops=1000",major,minor,r.cfg.IOBytesPerSecond,r.cfg.IOBytesPerSecond);if !strings.Contains(ioMax,expected){return errors.New("VM disk I/O limit is not enforced")}
 	return nil
 }
