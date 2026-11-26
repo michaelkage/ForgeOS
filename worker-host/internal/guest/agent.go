@@ -228,8 +228,8 @@ func heartbeatLoop(ctx context.Context,api *url.URL,job RedeemedJob,cancel conte
 	}}
 }
 func uploadArtifact(ctx context.Context,api *url.URL,job RedeemedJob,path string)error{
-	stLink,err:=os.Lstat(path);if err!=nil{return err};if !stLink.Mode().IsRegular()||stLink.Mode()&os.ModeSymlink!=0{return errors.New("build artifact must be a regular non-symlink file")};f,err:=os.Open(path);if err!=nil{return err};defer f.Close()
-	st,err:=f.Stat();if err!=nil{return err};if !st.Mode().IsRegular()||st.Size()<=0||st.Size()>20*1024*1024*1024{return errors.New("build artifact size is invalid")}
+	fd,err:=syscall.Open(path,syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW,0);if err!=nil{return err};f:=os.NewFile(uintptr(fd),path);defer f.Close()
+	st,err:=f.Stat();if err!=nil{return err};sys,ok:=st.Sys().(*syscall.Stat_t);if !st.Mode().IsRegular()||st.Size()<=0||st.Size()>20*1024*1024*1024||!ok||sys.Uid!=10000||st.Mode().Perm()&0022!=0{return errors.New("build artifact must be a bounded, non-writable regular file owned by the unprivileged worker")}
 	h:=sha256.New();if _,err:=io.Copy(h,f);err!=nil{return err};digest:=hex.EncodeToString(h.Sum(nil));if _,err:=f.Seek(0,io.SeekStart);err!=nil{return err}
 	var intent struct{URL string `json:"url"`;RequiredHeaders map[string]string `json:"requiredHeaders"`}
 	_,err=postJSON(ctx,api,"/api/internal/build-jobs/"+job.JobID+"/artifact-upload",job.LeaseToken,map[string]any{"workerId":job.WorkerID,"leaseToken":job.LeaseToken,"sha256":digest,"sizeBytes":st.Size()},&intent);if err!=nil{return err}
