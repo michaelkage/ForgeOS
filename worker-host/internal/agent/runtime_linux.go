@@ -354,28 +354,33 @@ func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 	}
 	if exists,e:=nftTableExists("inet",m.PolicyTable);e!=nil{return e}else if exists{if e=run(context.Background(),"/usr/sbin/nft","delete","table","inet",m.PolicyTable);e!=nil{return fmt.Errorf("remove VM egress filter: %w",e)}}
 	if exists,e:=nftTableExists("ip",m.NATTable);e!=nil{return e}else if exists{if e=run(context.Background(),"/usr/sbin/nft","delete","table","ip",m.NATTable);e!=nil{return fmt.Errorf("remove VM NAT rules: %w",e)}}
-	if exists,_:=ipLinkExists(m.HostVeth);exists{if e:=run(context.Background(),"/usr/sbin/ip","link","delete",m.HostVeth);e!=nil{return fmt.Errorf("remove VM host veth: %w",e)}}
-	if mounted,_:=isMountPoint(m.JailDir);mounted{if e:=run(context.Background(),"/usr/bin/umount",m.JailDir);e!=nil{return fmt.Errorf("unmount encrypted VM storage: %w",e)}}
+	if exists,e:=nftTableExists("inet",m.PolicyTable);e!=nil{return e}else if exists{return errors.New("VM egress filter remains after teardown")}
+	if exists,e:=nftTableExists("ip",m.NATTable);e!=nil{return e}else if exists{return errors.New("VM NAT rules remain after teardown")}
+	if exists,e:=ipLinkExists(m.HostVeth);e!=nil{return e}else if exists{if e=run(context.Background(),"/usr/sbin/ip","link","delete",m.HostVeth);e!=nil{return fmt.Errorf("remove VM host veth: %w",e)}}
+	mounted,e:=isMountPoint(m.JailDir);if e!=nil{return e};if mounted{if e=run(context.Background(),"/usr/bin/umount",m.JailDir);e!=nil{return fmt.Errorf("unmount encrypted VM storage: %w",e)}}
+	mounted,e=isMountPoint(m.JailDir);if e!=nil{return e};if mounted{return errors.New("encrypted VM storage remains mounted after teardown")}
 	if _,e:=os.Stat(filepath.Join("/dev/mapper",m.Mapper));e==nil{if e=run(context.Background(),"/usr/sbin/cryptsetup","close",m.Mapper);e!=nil{return fmt.Errorf("close encrypted VM storage: %w",e)}}
-	if _,e:=os.Stat(m.CgroupPath);e==nil{if e=os.Remove(m.CgroupPath);e!=nil{return fmt.Errorf("remove VM cgroup: %w",e)}}
-	_ = run(context.Background(),"/usr/bin/setfacl","-x","u:"+strconv.Itoa(m.UID),"/dev/kvm")
-	if _,e:=os.Stat(filepath.Join("/run/netns",m.NetNS));e==nil{if e=run(context.Background(),"/usr/sbin/ip","netns","delete",m.NetNS);e!=nil{return fmt.Errorf("remove VM network namespace: %w",e)}}
-	if mounted,_:=isMountPoint(m.JailDir);mounted{return errors.New("encrypted VM storage remains mounted after teardown")}
 	if _,e:=os.Stat(filepath.Join("/dev/mapper",m.Mapper));e==nil{return errors.New("encrypted VM mapping remains after teardown")}
+	if _,e:=os.Stat(m.CgroupPath);e==nil{if e=os.Remove(m.CgroupPath);e!=nil{return fmt.Errorf("remove VM cgroup: %w",e)}}
 	if _,e:=os.Stat(m.CgroupPath);e==nil{return errors.New("VM cgroup remains after teardown")}
-	if exists,_:=ipLinkExists(m.HostVeth);exists{return errors.New("VM host network interface remains after teardown")}
+	acl,aclErr:=exec.Command("/usr/bin/getfacl","-cp","/dev/kvm").Output();if aclErr!=nil{return fmt.Errorf("inspect KVM device ACL: %w",aclErr)}
+	entry:="user:"+strconv.Itoa(m.UID)+":"
+	if strings.Contains(string(acl),entry){if e=run(context.Background(),"/usr/bin/setfacl","-x","u:"+strconv.Itoa(m.UID),"/dev/kvm");e!=nil{return fmt.Errorf("remove KVM device ACL: %w",e)};acl,aclErr=exec.Command("/usr/bin/getfacl","-cp","/dev/kvm").Output();if aclErr!=nil||strings.Contains(string(acl),entry){return errors.New("per-VM KVM device ACL remains after teardown")}}
+	if _,e:=os.Stat(filepath.Join("/run/netns",m.NetNS));e==nil{if e=run(context.Background(),"/usr/sbin/ip","netns","delete",m.NetNS);e!=nil{return fmt.Errorf("remove VM network namespace: %w",e)}}
 	if _,e:=os.Stat(filepath.Join("/run/netns",m.NetNS));e==nil{return errors.New("VM network namespace remains after teardown")}
+	if exists,e:=ipLinkExists(m.HostVeth);e!=nil{return e}else if exists{return errors.New("VM host network interface remains after teardown")}
+	if mounted,e:=isMountPoint(m.JailDir);e!=nil{return e}else if mounted{return errors.New("encrypted VM storage remains mounted after teardown")}
 	if _,e:=os.Stat(m.JailDir);e==nil{if e=os.RemoveAll(m.JailDir);e!=nil{return e}}
-	_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,m.ID))
+	if err:=os.RemoveAll(filepath.Join(r.cfg.StateDir,m.ID));err!=nil{return err}
 	delete(r.evidence,m.ID)
 	return nil
 }
-func nftTableExists(family,table string)(bool,error){cmd:=exec.Command("/usr/sbin/nft","list","table",family,table);err:=cmd.Run();if err==nil{return true,nil};if _,ok:=err.(*exec.ExitError);ok{return false,nil};return false,err}
-func ipLinkExists(name string)(bool,error){cmd:=exec.Command("/usr/sbin/ip","link","show","dev",name);err:=cmd.Run();if err==nil{return true,nil};if _,ok:=err.(*exec.ExitError);ok{return false,nil};return false,err}
+func nftTableExists(family,table string)(bool,error){cmd:=exec.Command("/usr/sbin/nft","list","table",family,table);out,err:=cmd.CombinedOutput();if err==nil{return true,nil};if ee,ok:=err.(*exec.ExitError);ok&&strings.Contains(string(out),"No such file or directory"){return false,nil};return false,fmt.Errorf("inspect nftables table %s/%s: %w: %s",family,table,err,strings.TrimSpace(string(out)))}
+func ipLinkExists(name string)(bool,error){cmd:=exec.Command("/usr/sbin/ip","link","show","dev",name);out,err:=cmd.CombinedOutput();if err==nil{return true,nil};if ee,ok:=err.(*exec.ExitError);ok&&strings.Contains(string(out),"does not exist"){return false,nil};return false,fmt.Errorf("inspect interface %s: %w: %s",name,err,strings.TrimSpace(string(out)))}
 
 func isMountPoint(path string)(bool,error){b,e:=os.ReadFile("/proc/self/mountinfo");if e!=nil{return false,e};clean:=filepath.Clean(path);for _,line:=range strings.Split(string(b),"\n"){f:=strings.Fields(line);if len(f)>4&&f[4]==clean{return true,nil}};return false,nil}
-func (r *LinuxRuntime) Recover()error{r.mu.Lock();defer r.mu.Unlock();entries,e:=os.ReadDir(r.cfg.StateDir);if os.IsNotExist(e){return nil};if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if e!=nil{errs=append(errs,e);continue};if e=r.cleanup(m);e!=nil{errs=append(errs,e)}};if len(errs)>0{return errors.Join(errs...)};return nil}
-func (r *LinuxRuntime) SweepExpired()error{r.mu.Lock();defer r.mu.Unlock();entries,e:=os.ReadDir(r.cfg.StateDir);if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if e!=nil{errs=append(errs,e);continue};if time.Now().After(m.Deadline){if e=r.cleanup(m);e!=nil{errs=append(errs,e)}}};if len(errs)>0{return errors.Join(errs...)};return nil}
+func (r *LinuxRuntime) Recover()error{r.mu.Lock();defer r.mu.Unlock();entries,e:=os.ReadDir(r.cfg.StateDir);if os.IsNotExist(e){return nil};if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if os.IsNotExist(e){_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,entry.Name()));continue};if e!=nil{errs=append(errs,e);continue};if e=r.cleanup(m);e!=nil{errs=append(errs,e)}};if len(errs)>0{return errors.Join(errs...)};return nil}
+func (r *LinuxRuntime) SweepExpired()error{r.mu.Lock();defer r.mu.Unlock();entries,e:=os.ReadDir(r.cfg.StateDir);if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if os.IsNotExist(e){_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,entry.Name()));continue};if e!=nil{errs=append(errs,e);continue};if time.Now().After(m.Deadline){if e=r.cleanup(m);e!=nil{errs=append(errs,e)}}};if len(errs)>0{return errors.Join(errs...)};return nil}
 func verifyImageDigest(path,digest string)error{f,e:=os.Open(path);if e!=nil{return e};defer f.Close();h:=sha256.New();if _,e=io.Copy(h,f);e!=nil{return e};if "sha256:"+hex.EncodeToString(h.Sum(nil))!=digest{return errors.New("worker image bytes do not match the requested immutable SHA-256 digest")};return nil}
 func (r *LinuxRuntime) writeMeta(m runtimeMeta)error{b,e:=json.Marshal(m);if e!=nil{return e};tmp:=filepath.Join(r.cfg.StateDir,m.ID,"runtime.json.tmp");if e=os.WriteFile(tmp,b,0600);e!=nil{return e};return os.Rename(tmp,filepath.Join(r.cfg.StateDir,m.ID,"runtime.json"))}
 func (r *LinuxRuntime) readMeta(id string)(runtimeMeta,error){if !instancePattern.MatchString(id){return runtimeMeta{},errors.New("invalid instance ID")};b,e:=os.ReadFile(filepath.Join(r.cfg.StateDir,id,"runtime.json"));if e!=nil{return runtimeMeta{},e};var m runtimeMeta;e=json.Unmarshal(b,&m);return m,e}
