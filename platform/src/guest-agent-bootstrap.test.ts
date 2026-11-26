@@ -24,7 +24,6 @@ function canonicalJson(value: unknown): string {
 function envelope(overrides: Record<string, unknown> = {}) {
   const payload = {
     schemaVersion: 1,
-    workerId: "forgeos-worker-01",
     ...expected,
     apiBaseUrl: "https://forgeos.example",
     bootstrapCredential: "c".repeat(64),
