@@ -12,20 +12,7 @@ import (
 	"time"
 )
 
-var shaPattern=regexp.MustCompile(`^[a-f0-9]{64}package signing
-
-import (
-	"errors"
-	"fmt"
-	"net"
-	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
-	"time"
-)
-
-)
+var shaPattern = regexp.MustCompile("^[a-f0-9]{64}$")
 
 type Config struct {
 	Listen string
@@ -46,46 +33,64 @@ type Config struct {
 	SignTimeout time.Duration
 }
 
-func ConfigFromEnv() (Config,error) {
-	c:=Config{
-		Listen:os.Getenv("FORGEOS_SIGNING_LISTEN"),
-		TLSCertPath:os.Getenv("FORGEOS_SIGNING_TLS_CERT"),
-		TLSKeyPath:os.Getenv("FORGEOS_SIGNING_TLS_KEY"),
-		ClientCAPath:os.Getenv("FORGEOS_SIGNING_CLIENT_CA"),
-		BearerToken:os.Getenv("FORGEOS_SIGNING_BEARER_TOKEN"),
-		JavaPath:os.Getenv("FORGEOS_SIGNING_JAVA"),
-		JarSignerPath:os.Getenv("FORGEOS_SIGNING_JARSIGNER"),
-		SignAPKJar:os.Getenv("FORGEOS_SIGNING_SIGNAPK_JAR"),
-		SignAPKJarSHA256:os.Getenv("FORGEOS_SIGNING_SIGNAPK_SHA256"),
-		CertificatePath:os.Getenv("FORGEOS_SIGNING_CERT"),
-		CertificateSHA256:os.Getenv("FORGEOS_SIGNING_CERT_SHA256"),
-		PrivateKeyPath:os.Getenv("FORGEOS_SIGNING_PRIVATE_KEY"),
-		PrivateKeySHA256:os.Getenv("FORGEOS_SIGNING_PRIVATE_KEY_SHA256"),
-		WorkDir:os.Getenv("FORGEOS_SIGNING_WORKDIR"),
-		MaxArtifactBytes:20*1024*1024*1024,
-		SignTimeout:time.Hour,
+func ConfigFromEnv() (Config, error) {
+	c := Config{
+		Listen: os.Getenv("FORGEOS_SIGNING_LISTEN"),
+		TLSCertPath: os.Getenv("FORGEOS_SIGNING_TLS_CERT"),
+		TLSKeyPath: os.Getenv("FORGEOS_SIGNING_TLS_KEY"),
+		ClientCAPath: os.Getenv("FORGEOS_SIGNING_CLIENT_CA"),
+		BearerToken: os.Getenv("FORGEOS_SIGNING_BEARER_TOKEN"),
+		JavaPath: os.Getenv("FORGEOS_SIGNING_JAVA"),
+		JarSignerPath: os.Getenv("FORGEOS_SIGNING_JARSIGNER"),
+		SignAPKJar: os.Getenv("FORGEOS_SIGNING_SIGNAPK_JAR"),
+		SignAPKJarSHA256: os.Getenv("FORGEOS_SIGNING_SIGNAPK_SHA256"),
+		CertificatePath: os.Getenv("FORGEOS_SIGNING_CERT"),
+		CertificateSHA256: os.Getenv("FORGEOS_SIGNING_CERT_SHA256"),
+		PrivateKeyPath: os.Getenv("FORGEOS_SIGNING_PRIVATE_KEY"),
+		PrivateKeySHA256: os.Getenv("FORGEOS_SIGNING_PRIVATE_KEY_SHA256"),
+		WorkDir: os.Getenv("FORGEOS_SIGNING_WORKDIR"),
+		MaxArtifactBytes: 20 * 1024 * 1024 * 1024,
+		SignTimeout: time.Hour,
 	}
-	if c.Listen==""{c.Listen="127.0.0.1:9444"}
-	if c.JavaPath==""{c.JavaPath="/usr/bin/java"}
-	if c.JarSignerPath==""{c.JarSignerPath="/usr/bin/jarsigner"}
-	if value:=os.Getenv("FORGEOS_SIGNING_MAX_BYTES");value!=""{n,err:=strconv.ParseInt(value,10,64);if err!=nil{return c,err};c.MaxArtifactBytes=n}
-	if value:=os.Getenv("FORGEOS_SIGNING_TIMEOUT_SECONDS");value!=""{n,err:=strconv.Atoi(value);if err!=nil{return c,err};c.SignTimeout=time.Duration(n)*time.Second}
-	if err:=c.Validate();err!=nil{return c,err}
-	return c,nil
+	if c.Listen == "" { c.Listen = "127.0.0.1:9444" }
+	if c.JavaPath == "" { c.JavaPath = "/usr/bin/java" }
+	if c.JarSignerPath == "" { c.JarSignerPath = "/usr/bin/jarsigner" }
+	if value := os.Getenv("FORGEOS_SIGNING_MAX_BYTES"); value != "" {
+		n, err := strconv.ParseInt(value, 10, 64); if err != nil { return c, err }; c.MaxArtifactBytes = n
+	}
+	if value := os.Getenv("FORGEOS_SIGNING_TIMEOUT_SECONDS"); value != "" {
+		n, err := strconv.Atoi(value); if err != nil { return c, err }; c.SignTimeout = time.Duration(n) * time.Second
+	}
+	if err := c.Validate(); err != nil { return c, err }
+	return c, nil
 }
 
-func (c Config) Validate()error{
-	host,port,err:=net.SplitHostPort(c.Listen);if err!=nil{return fmt.Errorf("signing listen address must be host:port: %w",err)}
-	ip:=net.ParseIP(host);if ip==nil||ip.IsUnspecified()||(!ip.IsPrivate()&&!ip.IsLoopback()&&!ip.IsLinkLocalUnicast()){return errors.New("signing service must bind to an explicit private interface address")}
-	if p,err:=strconv.Atoi(port);err!=nil||p<1||p>65535{return errors.New("signing service port is invalid")}
-	for name,value:=range map[string]string{"TLS certificate":c.TLSCertPath,"TLS private key":c.TLSKeyPath,"client CA":c.ClientCAPath,"signapk JAR":c.SignAPKJar,"release certificate":c.CertificatePath,"release private key":c.PrivateKeyPath,"work directory":c.WorkDir,"Java executable":c.JavaPath,"jarsigner executable":c.JarSignerPath}{
-		if value==""||!filepath.IsAbs(value){return fmt.Errorf("%s path must be absolute",name)}
+func (c Config) Validate() error {
+	host, port, err := net.SplitHostPort(c.Listen)
+	if err != nil { return fmt.Errorf("signing listen address must be host:port: %w", err) }
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsUnspecified() || (!ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast()) {
+		return errors.New("signing service must bind to an explicit private interface address")
 	}
-	if len(c.BearerToken)<32{return errors.New("signing service bearer token must contain at least 32 characters")}
-	for name,value:=range map[string]string{"signapk SHA-256":c.SignAPKJarSHA256,"release certificate SHA-256":c.CertificateSHA256,"release private-key SHA-256":c.PrivateKeySHA256}{if !shaPattern.MatchString(value){return fmt.Errorf("%s must be a 64-character lowercase SHA-256 digest",name)}}
-	if c.MaxArtifactBytes<1024||c.MaxArtifactBytes>20*1024*1024*1024{return errors.New("signing artifact size limit must be between 1 KiB and 20 GiB")}
-	if c.SignTimeout<time.Minute||c.SignTimeout>24*time.Hour{return errors.New("signing timeout must be between one minute and 24 hours")}
-	for _,p:=range []string{c.TLSCertPath,c.TLSKeyPath,c.ClientCAPath,c.SignAPKJar,c.CertificatePath,c.PrivateKeyPath,c.JavaPath,c.JarSignerPath}{if strings.Contains(p,"\x00"){return errors.New("signing path contains a NUL byte")}}
+	if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 { return errors.New("signing service port is invalid") }
+	for name, value := range map[string]string{
+		"TLS certificate": c.TLSCertPath, "TLS private key": c.TLSKeyPath, "client CA": c.ClientCAPath,
+		"signapk JAR": c.SignAPKJar, "release certificate": c.CertificatePath, "release private key": c.PrivateKeyPath,
+		"work directory": c.WorkDir, "Java executable": c.JavaPath, "jarsigner executable": c.JarSignerPath,
+	} {
+		if value == "" || !filepath.IsAbs(value) { return fmt.Errorf("%s path must be absolute", name) }
+	}
+	if len(c.BearerToken) < 32 { return errors.New("signing service bearer token must contain at least 32 characters") }
+	for name, value := range map[string]string{
+		"signapk SHA-256": c.SignAPKJarSHA256, "release certificate SHA-256": c.CertificateSHA256,
+		"release private-key SHA-256": c.PrivateKeySHA256,
+	} {
+		if !shaPattern.MatchString(value) { return fmt.Errorf("%s must be a 64-character lowercase SHA-256 digest", name) }
+	}
+	if c.MaxArtifactBytes < 1024 || c.MaxArtifactBytes > 20*1024*1024*1024 { return errors.New("signing artifact size limit must be between 1 KiB and 20 GiB") }
+	if c.SignTimeout < time.Minute || c.SignTimeout > 24*time.Hour { return errors.New("signing timeout must be between one minute and 24 hours") }
+	for _, p := range []string{c.TLSCertPath,c.TLSKeyPath,c.ClientCAPath,c.SignAPKJar,c.CertificatePath,c.PrivateKeyPath,c.JavaPath,c.JarSignerPath} {
+		if strings.Contains(p, "\x00") { return errors.New("signing path contains a NUL byte") }
+	}
 	return nil
 }
-
