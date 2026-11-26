@@ -235,16 +235,15 @@ func (s *Server) ProvisionLocal(req ProvisionRequest)(Instance,error){
 		if evidence,ok:=s.cfg.Runtime.(interface{Evidence(string)(IsolationProfile,error)});ok{if _,err:=evidence.Evidence(id);err!=nil{return Instance{},err}}
 		return existing.Instance,nil
 	}
-	for _,existing:=range s.instances{if existing.Instance.JobID==req.JobID&&existing.Instance.Attempt==req.Attempt{return Instance{},errors.New("job attempt already has a VM")}}
+	for _,existing:=range s.instances{if existing.Instance.JobID==req.JobID&&existing.Instance.Attempt==req.Attempt{return existing.Instance,errors.New("job attempt already has a VM")}}
 	uuid,err:=randomUUID();if err!=nil{return Instance{},err}
 	id:="fc-"+strings.ReplaceAll(uuid,"-","")
-	if err:=s.cfg.Runtime.Provision(req,id);err!=nil{_ = s.cfg.Runtime.Terminate(id);return Instance{},fmt.Errorf("provision Firecracker worker: %w",err)}
-	if evidence,ok:=s.cfg.Runtime.(interface{Evidence(string)(IsolationProfile,error)});ok{if _,err:=evidence.Evidence(id);err!=nil{_ = s.cfg.Runtime.Terminate(id);return Instance{},fmt.Errorf("host isolation evidence failed: %w",err)}}
-	now:=time.Now().UTC()
-	instance:=Instance{Provider:providerID,InstanceID:id,JobID:req.JobID,Attempt:req.Attempt,Architecture:req.Architecture,ImageDigest:req.ImageDigest,CreatedAt:now}
+	now:=time.Now().UTC();instance:=Instance{Provider:providerID,InstanceID:id,JobID:req.JobID,Attempt:req.Attempt,Architecture:req.Architecture,ImageDigest:req.ImageDigest,CreatedAt:now}
+	if err:=s.cfg.Runtime.Provision(req,id);err!=nil{_ = s.cfg.Runtime.Terminate(id);return instance,fmt.Errorf("provision Firecracker worker: %w",err)}
+	if evidence,ok:=s.cfg.Runtime.(interface{Evidence(string)(IsolationProfile,error)});ok{if _,err:=evidence.Evidence(id);err!=nil{_ = s.cfg.Runtime.Terminate(id);return instance,fmt.Errorf("host isolation evidence failed: %w",err)}}
 	record:=storedInstance{Instance:instance,RequestID:req.RequestID,Resources:req.Resources,CreatedAt:now}
 	s.instances[id]=record;s.requests[req.RequestID]=id
-	if err:=s.saveState();err!=nil{delete(s.instances,id);delete(s.requests,req.RequestID);_ = s.cfg.Runtime.Terminate(id);return Instance{},fmt.Errorf("persist worker state: %w",err)}
+	if err:=s.saveState();err!=nil{delete(s.instances,id);delete(s.requests,req.RequestID);_ = s.cfg.Runtime.Terminate(id);return instance,fmt.Errorf("persist worker state: %w",err)}
 	return instance,nil
 }
 
