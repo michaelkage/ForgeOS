@@ -27,14 +27,14 @@ import (
 var uuidPattern=regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 var shaPattern=regexp.MustCompile(`^[a-f0-9]{64}$`)
 
-type Service struct { cfg Config; ledger *ledger; mux *http.ServeMux }
+type Service struct { cfg Config; ledger *ledger; mux *http.ServeMux; slots chan struct{} }
 func NewService(cfg Config)(*Service,error){
 	if err:=cfg.Validate();err!=nil{return nil,err}
 	for _,p:=range []string{cfg.TLSCertPath,cfg.TLSKeyPath,cfg.ClientCAPath,cfg.SignAPKJar,cfg.CertificatePath,cfg.PrivateKeyPath,cfg.JavaPath,cfg.JarSignerPath}{if err:=verifyProtectedFile(p,p==cfg.PrivateKeyPath||p==cfg.TLSKeyPath,p==cfg.JavaPath||p==cfg.JarSignerPath);err!=nil{return nil,fmt.Errorf("verify signing dependency %s: %w",p,err)}}
 	if err:=os.MkdirAll(cfg.WorkDir,0700);err!=nil{return nil,err}
 	st,err:=os.Stat(cfg.WorkDir);if err!=nil{return nil,err};if !st.IsDir()||st.Mode().Perm()&0077!=0{return nil,errors.New("signing work directory must be a directory inaccessible to other users")}
 	l,err:=openLedger(filepath.Join(cfg.WorkDir,"signing-ledger.jsonl"));if err!=nil{return nil,err}
-	s:=&Service{cfg:cfg,ledger:l,mux:http.NewServeMux()}
+	s:=&Service{cfg:cfg,ledger:l,mux:http.NewServeMux(),slots:make(chan struct{},1)}
 	s.mux.HandleFunc("GET /healthz",s.health)
 	s.mux.HandleFunc("POST /v1/sign",s.sign)
 	return s,nil
@@ -93,6 +93,7 @@ func(s *Service) sign(w http.ResponseWriter,r *http.Request){
 		s.serveCached(w,r,existing);return
 	}
 	ctx,cancel:=context.WithTimeout(r.Context(),s.cfg.SignTimeout);defer cancel()
+	select{case s.slots<-struct{}{}:defer func(){<-s.slots}();case <-ctx.Done():http.Error(w,"signing request cancelled",http.StatusRequestTimeout);return}
 	input,err:=os.CreateTemp(s.cfg.WorkDir,"input-*.zip");if err!=nil{http.Error(w,"unable to allocate signing workspace",http.StatusInternalServerError);return}
 	inputPath:=input.Name();defer os.Remove(inputPath)
 	h:=sha256.New();limited:=io.LimitReader(r.Body,s.cfg.MaxArtifactBytes+1)
