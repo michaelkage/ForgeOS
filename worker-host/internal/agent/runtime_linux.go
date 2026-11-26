@@ -188,8 +188,8 @@ func (r *LinuxRuntime) verifyResourceCapacity(res Resources)error{
 	required:=uint64(res.MemoryMiB+512)*1024*1024
 	if total<=reserve||available<required+reserve{return errors.New("currently available host memory cannot safely satisfy the VM memory limit and host reserve")}
 	var fs syscall.Statfs_t;if err:=syscall.Statfs(r.cfg.StateDir,&fs);err!=nil{return err}
-	available:=uint64(fs.Bavail)*uint64(fs.Bsize);disk:=uint64(res.DiskGiB)*1024*1024*1024
-	if available<disk{return errors.New("host filesystem does not have enough unallocated space for the fully reserved encrypted VM disk")}
+	availableDiskBytes:=uint64(fs.Bavail)*uint64(fs.Bsize);disk:=uint64(res.DiskGiB)*1024*1024*1024
+	if availableDiskBytes<disk{return errors.New("host filesystem does not have enough unallocated space for the fully reserved encrypted VM disk")}
 	return nil
 }
 
