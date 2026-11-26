@@ -26,10 +26,12 @@ func listenVsock(port uint32)(net.Listener,error){
 	if err:=syscall.Listen(fd,1);err!=nil{_ = syscall.Close(fd);return nil,err}
 	return &vsockListener{fd:fd,port:port},nil
 }
-func (l *vsockListener) Accept()(net.Conn,error){fd,_,err:=syscall.Accept(l.fd);if err!=nil{return nil,err};syscall.CloseOnExec(fd);return &vsockConn{fd:fd},nil}
+func (l *vsockListener) Accept()(net.Conn,error){
+	for{fd,_,errno:=syscall.Syscall6(syscall.SYS_ACCEPT4,uintptr(l.fd),0,0,uintptr(syscall.SOCK_CLOEXEC),0,0);if errno==syscall.EINTR{continue};if errno!=0{return nil,errno};return &vsockConn{fd:int(fd)},nil}
+}
 func (l *vsockListener) Close()error{return syscall.Close(l.fd)}
 func (l *vsockListener) Addr()net.Addr{return vsockAddr{cid:vmaddrCIDAny,port:l.port}}
-func (l *vsockListener) SetDeadline(time.Time)error{return nil}
+func (l *vsockListener) SetDeadline(t time.Time)error{var tv syscall.Timeval;if !t.IsZero(){d:=time.Until(t);if d<=0{d=time.Millisecond};tv=syscall.NsecToTimeval(d.Nanoseconds())};return syscall.SetsockoptTimeval(l.fd,syscall.SOL_SOCKET,syscall.SO_RCVTIMEO,&tv)}
 
 type vsockConn struct{fd int}
 func (c *vsockConn) Read(p []byte)(int,error){return syscall.Read(c.fd,p)}
