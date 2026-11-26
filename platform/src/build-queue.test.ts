@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildArtifactSchema, isWorkerLeaseCredentialValid, verifyBuildSnapshot, workerClaimSchema } from "./build-queue.js";
+import { buildArtifactSchema, isWorkerLeaseCredentialValid, sourceLockfileSchema, verifyBuildSnapshot, workerClaimSchema } from "./build-queue.js";
 import { createHash } from "node:crypto";
 
 const validArtifact = {
@@ -50,4 +50,16 @@ test("job lease bearer credential is exact, scoped, and rejects malformed header
   assert.equal(isWorkerLeaseCredentialValid(lease, lease), false);
   assert.equal(isWorkerLeaseCredentialValid("bearer " + lease, lease), false);
   assert.equal(isWorkerLeaseCredentialValid(undefined, lease), false);
+});
+
+test("source lockfile requires sorted unique safe project paths and full commit IDs", () => {
+  const lockfile = { schemaVersion: 1, projects: [
+    { path: "build/make/core", name: "platform_build", revision: "a".repeat(40) },
+    { path: "frameworks/base", name: "platform_frameworks_base", revision: "b".repeat(40) }
+  ] };
+  assert.equal(sourceLockfileSchema.safeParse(lockfile).success, true);
+  assert.equal(sourceLockfileSchema.safeParse({ ...lockfile, projects: [...lockfile.projects].reverse() }).success, false);
+  assert.equal(sourceLockfileSchema.safeParse({ ...lockfile, projects: [lockfile.projects[0], lockfile.projects[0]] }).success, false);
+  assert.equal(sourceLockfileSchema.safeParse({ ...lockfile, projects: [{ ...lockfile.projects[0], path: "../escape" }] }).success, false);
+  assert.equal(sourceLockfileSchema.safeParse({ ...lockfile, projects: [{ ...lockfile.projects[0], revision: "main" }] }).success, false);
 });
