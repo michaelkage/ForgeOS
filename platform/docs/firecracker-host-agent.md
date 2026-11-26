@@ -76,7 +76,7 @@ The guest init process receives one bounded envelope over the authenticated vsoc
 
 `POST /api/internal/guest-bootstrap/issue` is authenticated with the platform worker service credential. Its strict body contains `jobId`, `workerId`, and the active `leaseToken`. The platform locks and verifies the unexpired lease, then returns a random 256-bit URL-safe credential with a three-minute expiry. Only its SHA-256 digest is persisted. Re-issuing for the same attempt replaces the previous digest.
 
-`POST /api/internal/guest-bootstrap/redeem` accepts that credential as an HTTPS bearer token. Redemption atomically deletes the digest and returns the immutable job snapshot, snapshot digest, worker identity, attempt, and current lease token. A replay or concurrent second redemption fails. The lease must still be active and match the original worker and attempt.
+`POST /api/internal/guest-bootstrap/redeem` accepts that credential as an HTTPS bearer token. Redemption atomically deletes the digest and returns the immutable job snapshot, snapshot digest, worker identity, attempt, and current lease token. A replay or concurrent second redemption fails. A redeemed attempt cannot receive a replacement credential, even after the credential expiry. An unredeemed expired credential may be replaced, but only while its lease is still active. The lease must still be active and match the original worker and attempt.
 
 The credential table has no plaintext credential column. The issue endpoint remains unavailable unless build workers are explicitly enabled. This API does not provision a VM or enable Android builds.
 
