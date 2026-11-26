@@ -61,7 +61,7 @@ function validUuid(value: unknown): value is string {
 export function verifyGuestBootstrap(
   input: unknown,
   pinnedHostPublicKeyPem: string,
-  expected: { jobId: string; attempt: number; imageDigest: string; architecture: "x86_64" | "arm64" },
+  expected: { jobId: string; workerId: string; attempt: number; imageDigest: string; architecture: "x86_64" | "arm64" },
   now = Date.now()
 ): VerifiedGuestBootstrap {
   if (!isRecord(input) || !isRecord(input.payload) || typeof input.signature !== "string") {
@@ -88,7 +88,7 @@ export function verifyGuestBootstrap(
       !Number.isSafeInteger(payload.resources.wallTimeSeconds) || payload.resources.wallTimeSeconds < 60 || payload.resources.wallTimeSeconds > 172800) {
     throw new TypeError("Guest bootstrap identity or schema is invalid");
   }
-  if (payload.jobId !== expected.jobId || payload.attempt !== expected.attempt ||
+  if (payload.jobId !== expected.jobId || payload.workerId !== expected.workerId || payload.attempt !== expected.attempt ||
       payload.architecture !== expected.architecture || payload.imageDigest !== expected.imageDigest) {
     throw new Error("Guest bootstrap is bound to a different job, attempt, architecture, or image");
   }
@@ -101,10 +101,10 @@ export function verifyGuestBootstrap(
     throw new TypeError("Guest bootstrap API endpoint must be a credential-free HTTPS URL");
   }
   if (typeof payload.bootstrapCredential !== "string" ||
-      payload.bootstrapCredential.length < 32 || payload.bootstrapCredential.length > 4096) {
+      !/^[A-Za-z0-9_-]{40,64}$/.test(payload.bootstrapCredential)) {
     throw new TypeError("Guest bootstrap credential is invalid");
   }
-  if (typeof payload.nonce !== "string" || !/^[0-9a-f-]{36}$/i.test(payload.nonce)) {
+  if (!validUuid(payload.nonce)) {
     throw new TypeError("Guest bootstrap nonce is invalid");
   }
   const issuedAt = Date.parse(payload.issuedAt);
