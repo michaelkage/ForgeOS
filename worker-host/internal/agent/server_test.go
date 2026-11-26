@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
