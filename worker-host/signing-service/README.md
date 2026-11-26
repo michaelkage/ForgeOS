@@ -6,7 +6,7 @@ This is a separate service intended for a dedicated signing host. It is not part
 
 - Bind to a private management interface only; the default development bind is loopback.
 - Require TLS 1.3 and a client certificate issued by the dedicated platform-client CA.
-- Also require a separate bearer token. Deliver both client key material and the token only to the platform API's signing adapter.
+- Also require a separate bearer token and pin the exact platform API client-certificate SHA-256. Deliver client key material and the token only to the platform API's signing adapter.
 - Firewall the listener so only the platform API can reach it.
 - Keep the release certificate and PKCS#8 private key on the signing host. The service verifies they are regular root-owned files and rejects group/world-writable key material.
 - Keep the Java runtime, signapk.jar, and release certificate root-owned and non-writable. The service requires and verifies SHA-256 pins for signapk.jar, the release certificate, and the PKCS#8 private key before it starts.
