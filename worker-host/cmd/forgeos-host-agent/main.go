@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"strings"
 	"time"
 
 	"github.com/michaelkage/ForgeOS/worker-host/internal/agent"
@@ -46,9 +47,9 @@ func run()error{
 	server,err:=agent.NewServer(agent.Config{BearerToken:token,SigningKey:privateKey,StateDir:linuxConfig.StateDir,Runtime:runtime});if err!=nil{return err}
 	cert:=os.Getenv("HOST_AGENT_TLS_CERT");key:=os.Getenv("HOST_AGENT_TLS_KEY")
 	if cert==""||key==""{return errors.New("HOST_AGENT_TLS_CERT and HOST_AGENT_TLS_KEY are required")}
-	if _,err:=readRootOwned(cert,1<<20);err!=nil{return err};if _,err:=readRootOwned(key,1<<20);err!=nil{return err}
+	certData,err:=readRootOwned(cert,1<<20);if err!=nil{return err};keyData,err:=readRootOwned(key,1<<20);if err!=nil{return err};pair,err:=tls.X509KeyPair(certData,keyData);if err!=nil{return fmt.Errorf("load host-agent TLS identity: %w",err)}
 	listen:=os.Getenv("HOST_AGENT_LISTEN");if listen==""{listen=":9443"}
-	httpServer:=&http.Server{Addr:listen,Handler:server.Handler(),ReadHeaderTimeout:5*time.Second,ReadTimeout:15*time.Second,WriteTimeout:20*time.Second,IdleTimeout:30*time.Second,MaxHeaderBytes:16*1024,TLSConfig:&tls.Config{MinVersion:tls.VersionTLS13}}
+	httpServer:=&http.Server{Addr:listen,Handler:server.Handler(),ReadHeaderTimeout:5*time.Second,ReadTimeout:15*time.Second,WriteTimeout:20*time.Second,IdleTimeout:30*time.Second,MaxHeaderBytes:16*1024,TLSConfig:&tls.Config{MinVersion:tls.VersionTLS13,Certificates:[]tls.Certificate{pair}}}
 	ctx,stop:=signal.NotifyContext(context.Background(),syscall.SIGINT,syscall.SIGTERM);defer stop()
 	var schedulerDone chan struct{}
 	if os.Getenv("FORGEOS_SCHEDULER_ENABLED")=="true" {
@@ -60,7 +61,7 @@ func run()error{
 	}
 	go func(){ticker:=time.NewTicker(250*time.Millisecond);defer ticker.Stop();for{select{case<-ctx.Done():return;case<-ticker.C:if err:=runtime.SweepExpired();err!=nil{log.Printf("host-agent expiry reaper failed: %v",err)}}}}()
 	errCh:=make(chan error,1)
-	go func(){errCh<-httpServer.ListenAndServeTLS(cert,key)}()
+	go func(){errCh<-httpServer.ListenAndServeTLS("","")}()
 	select{
 	case <-ctx.Done():
 		shutdownCtx,cancel:=context.WithTimeout(context.Background(),15*time.Second);defer cancel()
@@ -79,9 +80,20 @@ func run()error{
 
 func readRootOwned(path string,max int64)([]byte,error){
 	if !filepath.IsAbs(path){return nil,errors.New("security-sensitive file paths must be absolute")}
-	st,err:=os.Lstat(path);if err!=nil{return nil,err}
+	if err:=verifyRootOwnedAncestors(filepath.Dir(path));err!=nil{return nil,err};st,err:=os.Lstat(path);if err!=nil{return nil,err}
 	if !st.Mode().IsRegular()||st.Mode()&os.ModeSymlink!=0{return nil,errors.New("security-sensitive file must be a regular non-symlink file")}
 	sys,ok:=st.Sys().(*syscall.Stat_t);if !ok||sys.Uid!=0||st.Mode().Perm()&0077!=0{return nil,errors.New("security-sensitive file must be root-owned and mode 0600 or stricter")}
 	if st.Size()>max{return nil,errors.New("security-sensitive file exceeds size limit")}
 	return os.ReadFile(path)
+}
+
+func verifyRootOwnedAncestors(path string)error{
+	if !filepath.IsAbs(path){return errors.New("parent path must be absolute")}
+	current:=string(os.PathSeparator)
+	for _,part:=range strings.Split(strings.TrimPrefix(filepath.Clean(path),string(os.PathSeparator)),string(os.PathSeparator)){
+		if part==""{continue};current=filepath.Join(current,part);st,err:=os.Lstat(current);if err!=nil{return err}
+		if !st.IsDir()||st.Mode()&os.ModeSymlink!=0{return fmt.Errorf("%s is not a real directory",current)}
+		sys,ok:=st.Sys().(*syscall.Stat_t);if !ok||sys.Uid!=0||st.Mode().Perm()&0022!=0{return fmt.Errorf("%s must be root-owned and not group/world writable",current)}
+	}
+	return nil
 }
