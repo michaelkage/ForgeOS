@@ -422,10 +422,10 @@ func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 		}
 		deadline:=time.Now().Add(15*time.Second)
 		for time.Now().Before(deadline){b,e:=os.ReadFile(cgroupProcs);if e!=nil||len(bytes.TrimSpace(b))==0{break};time.Sleep(100*time.Millisecond)}
-		b,e:=os.ReadFile(cgroupProcs);if e==nil&&len(bytes.TrimSpace(b))>0{
-		for _,raw:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(raw);if pid>1{_ = syscall.Kill(pid,syscall.SIGKILL)}}
-		deadline=time.Now().Add(5*time.Second);for time.Now().Before(deadline){b,e=os.ReadFile(cgroupProcs);if e!=nil||len(bytes.TrimSpace(b))==0{break};time.Sleep(50*time.Millisecond)}
-		b,e=os.ReadFile(cgroupProcs);if e==nil&&len(bytes.TrimSpace(b))>0{return errors.New("Firecracker processes remain; refusing to detach their resources")}
+		remaining,readErr:=os.ReadFile(cgroupProcs);if readErr==nil&&len(bytes.TrimSpace(remaining))>0{
+		for _,raw:=range strings.Fields(string(remaining)){pid,_:=strconv.Atoi(raw);if pid>1{_ = syscall.Kill(pid,syscall.SIGKILL)}}
+		deadline=time.Now().Add(5*time.Second);for time.Now().Before(deadline){remaining,readErr=os.ReadFile(cgroupProcs);if readErr!=nil||len(bytes.TrimSpace(remaining))==0{break};time.Sleep(50*time.Millisecond)}
+		remaining,readErr=os.ReadFile(cgroupProcs);if readErr==nil&&len(bytes.TrimSpace(remaining))>0{return errors.New("Firecracker processes remain; refusing to detach their resources")}
 	}
 	}
 	if m.FirecrackerPID>1&&r.processMatchesInstance(m,m.FirecrackerPID){
