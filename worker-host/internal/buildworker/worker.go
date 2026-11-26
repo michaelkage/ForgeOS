@@ -84,8 +84,8 @@ func verifyFlashableZIP(file string)error{
 	if len(zr.File)==0||len(zr.File)>200000{return errors.New("build output ZIP entry count is outside policy")}
 	payload,updater:=false,false
 	for _,f:=range zr.File{
-		name:=strings.ReplaceAll(f.Name,"\\","/");clean:=path.Clean(name)
-		if strings.HasPrefix(name,"/")||clean==".."||strings.HasPrefix(clean,"../")||strings.Contains(name,":")||clean!=name{return errors.New("build output ZIP contains an unsafe entry path")}
+		name:=strings.ReplaceAll(f.Name,"\\","/");trimmed:=strings.TrimSuffix(name,"/");clean:=path.Clean(trimmed)
+		if strings.HasPrefix(name,"/")||clean==".."||strings.HasPrefix(clean,"../")||strings.Contains(name,":")||clean!=trimmed{return errors.New("build output ZIP contains an unsafe entry path")}
 		if f.Mode()&os.ModeSymlink!=0{return errors.New("build output ZIP contains a symbolic link entry")}
 		if name=="payload.bin"{payload=true}
 		if name=="META-INF/com/google/android/update-binary"{updater=true}
