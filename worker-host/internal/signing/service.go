@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 		"io"
@@ -21,6 +20,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 		"time"
 )
 
