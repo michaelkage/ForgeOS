@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { request as httpsRequest, Agent } from "node:https";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import type { IncomingMessage, RequestOptions } from "node:http";
+import type { IncomingMessage } from "node:http";
 import { config } from "./config.js";
 import {
   createArtifactDownloadUrl,
