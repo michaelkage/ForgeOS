@@ -222,3 +222,33 @@ func canonicalValue(v any)([]byte,error){switch x:=v.(type){case map[string]any:
 	case []any:var b strings.Builder;b.WriteByte('[');for i,a:=range x{if i>0{b.WriteByte(',')};z,e:=canonicalValue(a);if e!=nil{return nil,e};b.Write(z)};b.WriteByte(']');return []byte(b.String()),nil
 	default:return json.Marshal(v)}}
 func sortStrings(a []string){for i:=1;i<len(a);i++{for j:=i;j>0&&a[j]<a[j-1];j--{a[j],a[j-1]=a[j-1],a[j]}}}
+
+
+func (s *Server) ProvisionLocal(req ProvisionRequest)(Instance,error){
+	if err:=validateRequest(req);err!=nil{return Instance{},err}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id,ok:=s.requests[req.RequestID];ok{
+		existing:=s.instances[id]
+		if existing.Instance.JobID!=req.JobID||existing.Instance.Attempt!=req.Attempt||existing.Instance.ImageDigest!=req.ImageDigest{return Instance{},errors.New("request ID is already bound to another job attempt")}
+		return existing.Instance,nil
+	}
+	for _,existing:=range s.instances{if existing.Instance.JobID==req.JobID&&existing.Instance.Attempt==req.Attempt{return Instance{},errors.New("job attempt already has a VM")}}
+	uuid,err:=randomUUID();if err!=nil{return Instance{},err}
+	id:="fc-"+strings.ReplaceAll(uuid,"-","")
+	if err:=s.cfg.Runtime.Provision(req,id);err!=nil{_ = s.cfg.Runtime.Terminate(id);return Instance{},fmt.Errorf("provision Firecracker worker: %w",err)}
+	now:=time.Now().UTC()
+	instance:=Instance{Provider:providerID,InstanceID:id,JobID:req.JobID,Attempt:req.Attempt,Architecture:req.Architecture,ImageDigest:req.ImageDigest,CreatedAt:now}
+	record:=storedInstance{Instance:instance,RequestID:req.RequestID,Resources:req.Resources,CreatedAt:now}
+	s.instances[id]=record;s.requests[req.RequestID]=id
+	if err:=s.saveState();err!=nil{delete(s.instances,id);delete(s.requests,req.RequestID);_ = s.cfg.Runtime.Terminate(id);return Instance{},fmt.Errorf("persist worker state: %w",err)}
+	return instance,nil
+}
+
+func (s *Server) TerminateLocal(instanceID string)error{
+	if !instancePattern.MatchString(instanceID){return errors.New("invalid instance ID")}
+	if err:=s.cfg.Runtime.Terminate(instanceID);err!=nil{return err}
+	state,err:=s.cfg.Runtime.Inspect(instanceID);if err!=nil{return err}
+	if state!="stopped"{return fmt.Errorf("worker teardown not independently confirmed; runtime state is %s",state)}
+	return nil
+}
