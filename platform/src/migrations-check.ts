@@ -71,7 +71,7 @@ try {
   assert.ok(eventTrigger.rows.some(row => row.tgname === "forgeos_build_job_events_append_only"));
   const bootstrapColumns = await client.query("SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='forgeos_guest_bootstrap_credentials'");
   const bootstrapNames = new Set(bootstrapColumns.rows.map(row => row.column_name));
-  for (const required of ["build_job_id", "attempt", "worker_id", "credential_sha256", "expires_at"]) {
+  for (const required of ["build_job_id", "attempt", "worker_id", "credential_sha256", "expires_at", "redeemed_at"]) {
     assert.ok(bootstrapNames.has(required), "Missing guest bootstrap credential column: " + required);
   }
   assert.ok(!bootstrapNames.has("credential"), "Raw guest bootstrap credentials must never be persisted");
