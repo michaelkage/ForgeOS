@@ -19,6 +19,7 @@ type Config struct {
 	TLSCertPath string
 	TLSKeyPath string
 	ClientCAPath string
+	ClientCertSHA256 string
 	BearerToken string
 	JavaPath string
 	JarSignerPath string
@@ -39,6 +40,7 @@ func ConfigFromEnv() (Config, error) {
 		TLSCertPath: os.Getenv("FORGEOS_SIGNING_TLS_CERT"),
 		TLSKeyPath: os.Getenv("FORGEOS_SIGNING_TLS_KEY"),
 		ClientCAPath: os.Getenv("FORGEOS_SIGNING_CLIENT_CA"),
+		ClientCertSHA256: os.Getenv("FORGEOS_SIGNING_CLIENT_CERT_SHA256"),
 		BearerToken: os.Getenv("FORGEOS_SIGNING_BEARER_TOKEN"),
 		JavaPath: os.Getenv("FORGEOS_SIGNING_JAVA"),
 		JarSignerPath: os.Getenv("FORGEOS_SIGNING_JARSIGNER"),
@@ -83,7 +85,7 @@ func (c Config) Validate() error {
 	if len(c.BearerToken) < 32 { return errors.New("signing service bearer token must contain at least 32 characters") }
 	for name, value := range map[string]string{
 		"signapk SHA-256": c.SignAPKJarSHA256, "release certificate SHA-256": c.CertificateSHA256,
-		"release private-key SHA-256": c.PrivateKeySHA256,
+		"release private-key SHA-256": c.PrivateKeySHA256, "platform client certificate SHA-256": c.ClientCertSHA256,
 	} {
 		if !shaPattern.MatchString(value) { return fmt.Errorf("%s must be a 64-character lowercase SHA-256 digest", name) }
 	}
