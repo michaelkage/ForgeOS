@@ -191,6 +191,7 @@ func ExecWorkerChild(cgroupPath,workerPath string,args []string)error{
 	if err:=syscall.Setgroups([]int{});err!=nil{return err}
 	if err:=syscall.Setgid(10000);err!=nil{return err}
 	if err:=syscall.Setuid(10000);err!=nil{return err}
+	_,_,errno:=syscall.Syscall6(syscall.SYS_PRCTL,38,1,0,0,0,0);if errno!=0{return errno}
 	argv:=append([]string{workerPath},args...)
 	return syscall.Exec(workerPath,argv,os.Environ())
 }
