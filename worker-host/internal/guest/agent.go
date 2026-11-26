@@ -42,6 +42,7 @@ type BootstrapPayload struct {
 	Nonce string `json:"nonce"`
 	IssuedAt time.Time `json:"issuedAt"`
 	ExpiresAt time.Time `json:"expiresAt"`
+	Resources struct { CPUCores int `json:"cpuCores"`; MemoryMiB int `json:"memoryMiB"`; DiskGiB int `json:"diskGiB"`; ProcessLimit int `json:"processLimit"`; WallTimeSeconds int `json:"wallTimeSeconds"` } `json:"resources"`
 }
 type Envelope struct { Payload BootstrapPayload `json:"payload"`; Signature string `json:"signature"` }
 type VerifiedBootstrap struct { Payload BootstrapPayload; API *url.URL }
@@ -56,7 +57,7 @@ func VerifyEnvelope(raw []byte,publicKey ed25519.PublicKey,now time.Time)(Verifi
 	sig,err:=base64.StdEncoding.DecodeString(env.Signature);if err!=nil||len(sig)!=ed25519.SignatureSize{return VerifiedBootstrap{},errors.New("bootstrap signature encoding is invalid")}
 	canonical,err:=canonicalJSON(env.Payload);if err!=nil||!ed25519.Verify(publicKey,canonical,sig){return VerifiedBootstrap{},errors.New("bootstrap signature verification failed")}
 	p:=env.Payload
-	if p.SchemaVersion!=1||!uuidRE.MatchString(p.JobID)||p.Attempt<1||p.Attempt>20||(p.Architecture!="x86_64"&&p.Architecture!="arm64")||!digestRE.MatchString(p.ImageDigest)||!credentialRE.MatchString(p.BootstrapCredential)||!uuidRE.MatchString(p.Nonce){return VerifiedBootstrap{},errors.New("bootstrap identity or credential is invalid")}
+	if p.SchemaVersion!=1||!uuidRE.MatchString(p.JobID)||p.Attempt<1||p.Attempt>20||(p.Architecture!="x86_64"&&p.Architecture!="arm64")||!digestRE.MatchString(p.ImageDigest)||!credentialRE.MatchString(p.BootstrapCredential)||!uuidRE.MatchString(p.Nonce)||p.Resources.CPUCores<2||p.Resources.CPUCores>128||p.Resources.MemoryMiB<4096||p.Resources.MemoryMiB>1048576||p.Resources.DiskGiB<100||p.Resources.DiskGiB>4096||p.Resources.ProcessLimit<128||p.Resources.ProcessLimit>65536||p.Resources.WallTimeSeconds<60||p.Resources.WallTimeSeconds>172800{return VerifiedBootstrap{},errors.New("bootstrap identity or credential is invalid")}
 	if p.IssuedAt.IsZero()||p.ExpiresAt.IsZero()||p.IssuedAt.After(now.Add(30*time.Second))||now.Sub(p.IssuedAt)>time.Minute||!p.ExpiresAt.After(now)||p.ExpiresAt.After(now.Add(5*time.Minute))||!p.ExpiresAt.After(p.IssuedAt){return VerifiedBootstrap{},errors.New("bootstrap envelope is expired or outside its validity window")}
 	api,err:=url.Parse(p.APIBaseURL);if err!=nil||api.Scheme!="https"||api.Host==""||api.User!=nil||api.RawQuery!=""||api.Fragment!=""{return VerifiedBootstrap{},errors.New("bootstrap API endpoint must be credential-free HTTPS")}
 	return VerifiedBootstrap{Payload:p,API:api},nil
@@ -110,22 +111,25 @@ func Run(ctx context.Context,cfg Config)error{
 	snapshot,err:=canonicalRaw(job.Snapshot);if err!=nil{return err}
 	sum:=sha256.Sum256(snapshot)
 	if "sha256:"+hex.EncodeToString(sum[:])!=job.SnapshotSHA256{return errors.New("immutable build snapshot digest mismatch")}
+	if err:=setupGuestProcessCgroup(verified.Payload.Resources.ProcessLimit);err!=nil{return err}
 	if err:=os.MkdirAll("/workspace",0700);err!=nil{return err}
-	mount:=exec.Command("mount","-t","ext4","/dev/vdb","/workspace");mount.Stdout=io.Discard;mount.Stderr=io.Discard
+	mount:=exec.Command("mount","-t","ext4","-o","nodev,nosuid","/dev/vdb","/workspace");mount.Stdout=io.Discard;mount.Stderr=io.Discard
 	if err:=mount.Run();err!=nil{return errors.New("encrypted guest workspace disk could not be mounted")}
 	workspace:="/workspace/forgeos"
-	if err:=os.MkdirAll(workspace,0700);err!=nil{return err}
-	artifactRel,relErr:=filepath.Rel("/workspace",cfg.ArtifactPath);if relErr!=nil||artifactRel==".."||strings.HasPrefix(artifactRel,".."+string(os.PathSeparator)){return errors.New("artifact output must be stored on the encrypted workspace disk")}
+	if err:=os.MkdirAll(workspace,0700);err!=nil{return err};if err:=os.Chown(workspace,10000,10000);err!=nil{return err}
+	artifactRel,relErr:=filepath.Rel(workspace,cfg.ArtifactPath);if relErr!=nil||artifactRel==".."||strings.HasPrefix(artifactRel,".."+string(os.PathSeparator)){return errors.New("artifact output must be stored inside the encrypted job workspace")}
 	snapshotPath:=filepath.Join(workspace,"snapshot.json")
-	if err:=os.WriteFile(snapshotPath,snapshot,0600);err!=nil{return err}
+	if err:=os.WriteFile(snapshotPath,snapshot,0400);err!=nil{return err};if err:=os.Chown(snapshotPath,10000,10000);err!=nil{return err}
 	if _,err:=conn.Write([]byte("BOOTSTRAP_REDEEMED\n"));err!=nil{return errors.New("unable to acknowledge prepared guest bootstrap")}
 	_ = conn.Close()
 	runCtx,cancel:=context.WithCancel(ctx);defer cancel()
 	heartbeatDone:=make(chan error,1)
 	go heartbeatLoop(runCtx,verified.API,job,cancel,heartbeatDone)
-	cmd:=exec.CommandContext(runCtx,cfg.WorkerPath,"--snapshot",snapshotPath,"--artifact",cfg.ArtifactPath)
+	self,err:=os.Executable();if err!=nil{return err}
+	cmdArgs:=[]string{"--worker-child","/sys/fs/cgroup/forgeos-worker",cfg.WorkerPath,"--snapshot",snapshotPath,"--artifact",cfg.ArtifactPath}
+	cmd:=exec.CommandContext(runCtx,self,cmdArgs...)
 	cmd.Dir=workspace
-	cmd.Env=[]string{"PATH=/usr/local/bin:/usr/bin:/bin","HOME=/root","TMPDIR=/tmp","FORGEOS_JOB_ID="+job.JobID,"FORGEOS_JOB_ATTEMPT="+strconv.Itoa(job.Attempt),"FORGEOS_WORKER_ID="+job.WorkerID,"FORGEOS_LEASE_TOKEN="+job.LeaseToken,"FORGEOS_API_BASE_URL="+verified.API.String()}
+	cmd.Env=[]string{"PATH=/usr/local/bin:/usr/bin:/bin","HOME="+workspace,"TMPDIR=/tmp","FORGEOS_JOB_ID="+job.JobID,"FORGEOS_JOB_ATTEMPT="+strconv.Itoa(job.Attempt)}
 	if err:=cmd.Run();err!=nil{
 		cancel()
 		_ = reportFailure(context.Background(),verified.API,job,"worker_execution_failed","The isolated build worker exited unsuccessfully.")
@@ -137,6 +141,39 @@ func Run(ctx context.Context,cfg Config)error{
 		_ = reportFailure(context.Background(),verified.API,job,"artifact_upload_failed","The build artifact could not be uploaded and verified.")
 		return err
 	}
+	return powerOffGuest()
+}
+
+func setupGuestProcessCgroup(limit int)error{
+	const root="/sys/fs/cgroup"
+	if !isCgroup2Mounted(){if err:=os.MkdirAll(root,0755);err!=nil{return err};cmd:=exec.Command("mount","-t","cgroup2","none",root);cmd.Stdout=io.Discard;cmd.Stderr=io.Discard;if err:=cmd.Run();err!=nil{return errors.New("guest cgroup v2 mount failed")}}
+	controllers,err:=os.ReadFile(filepath.Join(root,"cgroup.controllers"));if err!=nil||!strings.Contains(" "+string(controllers)+" "," pids "){return errors.New("guest kernel does not expose the cgroup v2 pids controller")}
+	control:=filepath.Join(root,"forgeos-control");worker:=filepath.Join(root,"forgeos-worker")
+	if err:=os.MkdirAll(control,0755);err!=nil{return err}
+	if err:=os.WriteFile(filepath.Join(control,"cgroup.procs"),[]byte(strconv.Itoa(os.Getpid())),0644);err!=nil{return errors.New("unable to move guest agent out of the cgroup root")}
+	subtree,err:=os.ReadFile(filepath.Join(root,"cgroup.subtree_control"));if err!=nil{return err}
+	if !strings.Contains(" "+string(subtree)+" "," pids "){if err:=os.WriteFile(filepath.Join(root,"cgroup.subtree_control"),[]byte("+pids"),0644);err!=nil{return errors.New("unable to enable guest pids controller")}}
+	if err:=os.MkdirAll(worker,0755);err!=nil{return err}
+	if err:=os.WriteFile(filepath.Join(worker,"pids.max"),[]byte(strconv.Itoa(limit)),0644);err!=nil{return errors.New("unable to enforce guest process limit")}
+	return nil
+}
+func isCgroup2Mounted()bool{
+	b,err:=os.ReadFile("/proc/self/mountinfo");if err!=nil{return false}
+	for _,line:=range strings.Split(string(b),"\n"){if strings.Contains(line," - cgroup2 ")&&strings.Contains(line," /sys/fs/cgroup "){return true}}
+	return false
+}
+func ExecWorkerChild(cgroupPath,workerPath string,args []string)error{
+	if os.Geteuid()!=0||cgroupPath!="/sys/fs/cgroup/forgeos-worker"{return errors.New("worker child must enter the preconfigured guest cgroup as root")}
+	if err:=trustedExecutable(workerPath);err!=nil{return err}
+	if err:=os.WriteFile(filepath.Join(cgroupPath,"cgroup.procs"),[]byte(strconv.Itoa(os.Getpid())),0644);err!=nil{return err}
+	if err:=syscall.Setgroups([]int{});err!=nil{return err}
+	if err:=syscall.Setgid(10000);err!=nil{return err}
+	if err:=syscall.Setuid(10000);err!=nil{return err}
+	argv:=append([]string{workerPath},args...)
+	return syscall.Exec(workerPath,argv,os.Environ())
+}
+func powerOffGuest()error{
+	if err:=syscall.Reboot(0x4321fedc);err!=nil{return fmt.Errorf("guest poweroff failed: %w",err)}
 	return nil
 }
 
