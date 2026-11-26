@@ -69,6 +69,9 @@ func run()error{
 		if err:=runtime.Recover();err!=nil{return fmt.Errorf("VM teardown during shutdown failed: %w",err)}
 		return nil
 	case err:=<-errCh:
+		stop()
+		if schedulerDone!=nil{<-schedulerDone}
+		if recoverErr:=runtime.Recover();recoverErr!=nil{return errors.Join(err,recoverErr)}
 		if errors.Is(err,http.ErrServerClosed){return nil}
 		return err
 	}
