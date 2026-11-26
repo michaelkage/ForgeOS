@@ -459,6 +459,9 @@ func (r *LinuxRuntime) verifyNetworkIsolation(m runtimeMeta)error{
 	return nil
 }
 
+func unixMajor(dev uint64)uint64{return (dev>>8)&0xfff|(dev>>32)&0xfffff000}
+func unixMinor(dev uint64)uint64{return dev&0xff|(dev>>12)&0xffffff00}
+
 func verifyNetworkPools()error{
 	out,err:=runOutput("/usr/sbin/ip","-4","route","show","table","all");if err!=nil{return fmt.Errorf("inspect host IPv4 routes: %w",err)}
 	pools:=[]netip.Prefix{netip.MustParsePrefix("10.252.0.0/16"),netip.MustParsePrefix("10.253.0.0/16")}
