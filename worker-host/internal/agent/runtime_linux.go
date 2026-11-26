@@ -363,14 +363,18 @@ func (r *LinuxRuntime) firecrackerState(m runtimeMeta)(string,error){
 
 func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 	cgroupProcs:=filepath.Join(m.CgroupPath,"cgroup.procs")
-	targetPIDs:=map[int]bool{};if m.FirecrackerPID>1{targetPIDs[m.FirecrackerPID]=true};if b,e:=os.ReadFile(cgroupProcs);e==nil{for _,raw:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(raw);if pid>1{targetPIDs[pid]=true}}}
+	targetPIDs:=map[int]bool{};if m.FirecrackerPID>1{targetPIDs[m.FirecrackerPID]=true};if m.FirecrackerPID==0{if raw,e:=os.ReadFile(filepath.Join(m.RootDir,"firecracker.pid"));e==nil{if pid,e:=strconv.Atoi(strings.TrimSpace(string(raw)));e==nil&&pid>1&&r.processMatchesInstance(m,pid){targetPIDs[pid]=true;m.FirecrackerPID=pid}}};if b,e:=os.ReadFile(cgroupProcs);e==nil{for _,raw:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(raw);if pid>1{targetPIDs[pid]=true}}}
 	if _,e:=os.Stat(cgroupProcs);e==nil{
 		if _,e=os.Stat(filepath.Join(m.CgroupPath,"cgroup.kill"));e==nil{if e=os.WriteFile(filepath.Join(m.CgroupPath,"cgroup.kill"),[]byte("1"),0200);e!=nil{return fmt.Errorf("kill Firecracker cgroup: %w",e)}}else{
 			b,_:=os.ReadFile(cgroupProcs);for _,line:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(line);if pid>1{_ = syscall.Kill(pid,syscall.SIGKILL)}}
 		}
 		deadline:=time.Now().Add(15*time.Second)
 		for time.Now().Before(deadline){b,e:=os.ReadFile(cgroupProcs);if e!=nil||len(bytes.TrimSpace(b))==0{break};time.Sleep(100*time.Millisecond)}
-		b,e:=os.ReadFile(cgroupProcs);if e==nil&&len(bytes.TrimSpace(b))>0{return errors.New("Firecracker processes remain; refusing to detach their resources")}
+		b,e:=os.ReadFile(cgroupProcs);if e==nil&&len(bytes.TrimSpace(b))>0{
+		for _,raw:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(raw);if pid>1{_ = syscall.Kill(pid,syscall.SIGKILL)}}
+		deadline=time.Now().Add(5*time.Second);for time.Now().Before(deadline){b,e=os.ReadFile(cgroupProcs);if e!=nil||len(bytes.TrimSpace(b))==0{break};time.Sleep(50*time.Millisecond)}
+		b,e=os.ReadFile(cgroupProcs);if e==nil&&len(bytes.TrimSpace(b))>0{return errors.New("Firecracker processes remain; refusing to detach their resources")}
+	}
 	}
 	if m.FirecrackerPID>1&&r.processMatchesInstance(m,m.FirecrackerPID){
 		_ = syscall.Kill(m.FirecrackerPID,syscall.SIGKILL)
@@ -397,7 +401,7 @@ func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 	if exists,e:=ipLinkExists(m.HostVeth);e!=nil{return e}else if exists{return errors.New("VM host network interface remains after teardown")}
 	if mounted,e:=isMountPoint(m.JailDir);e!=nil{return e}else if mounted{return errors.New("encrypted VM storage remains mounted after teardown")}
 	if _,e:=os.Stat(m.JailDir);e==nil{if e=os.RemoveAll(m.JailDir);e!=nil{return e}}
-	if err:=os.RemoveAll(filepath.Join(r.cfg.StateDir,m.ID));err!=nil{return err}
+	statePath:=filepath.Join(r.cfg.StateDir,m.ID);if err:=os.RemoveAll(statePath);err!=nil{return err};if _,err:=os.Stat(statePath);!os.IsNotExist(err){return errors.New("ephemeral VM state remains after teardown")}
 	delete(r.evidence,m.ID)
 	return nil
 }
@@ -443,7 +447,7 @@ func (r *LinuxRuntime) verifyFirecrackerInCgroup(m runtimeMeta)error{
 func killKvmPitThreadsForCgroup(targets map[int]bool)error{
 	entries,err:=os.ReadDir("/proc");if err!=nil{return err}
 	var killed []int
-	for _,entry:=range entries{threadPID,e:=strconv.Atoi(entry.Name());if e!=nil{continue};comm,e:=os.ReadFile(filepath.Join("/proc",entry.Name(),"comm"));if e!=nil{continue};name:=strings.TrimSpace(string(comm));if !strings.HasPrefix(name,"kvm-pit/"){continue};target,e:=strconv.Atoi(strings.TrimPrefix(name,"kvm-pit/"));if e!=nil||!targets[target]{continue};if e=syscall.Kill(threadPID,syscall.SIGKILL);e==nil{killed=append(killed,threadPID)}}
+	for _,entry:=range entries{threadPID,e:=strconv.Atoi(entry.Name());if e!=nil{continue};comm,e:=os.ReadFile(filepath.Join("/proc",entry.Name(),"comm"));if e!=nil{continue};name:=strings.TrimSpace(string(comm));if !strings.HasPrefix(name,"kvm-pit/"){continue};target,e:=strconv.Atoi(strings.TrimPrefix(name,"kvm-pit/"));if e!=nil||!targets[target]{continue};if e=syscall.Kill(threadPID,syscall.SIGKILL);e==nil{killed=append(killed,threadPID)}else if !errors.Is(e,syscall.ESRCH){return fmt.Errorf("terminate KVM PIT thread %d: %w",threadPID,e)}}
 	deadline:=time.Now().Add(2*time.Second);for time.Now().Before(deadline){alive:=false;for _,pid:=range killed{if _,e:=os.Stat(filepath.Join("/proc",strconv.Itoa(pid)));e==nil{alive=true;break}};if !alive{return nil};time.Sleep(50*time.Millisecond)}
 	for _,pid:=range killed{if _,e:=os.Stat(filepath.Join("/proc",strconv.Itoa(pid)));e==nil{return fmt.Errorf("KVM PIT thread %d remains after termination",pid)}}
 	return nil
