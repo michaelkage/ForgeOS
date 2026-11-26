@@ -16,25 +16,7 @@ import (
 )
 
 var digestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
-var commitPattern = regexp.MustCompile(`^[a-fA-F0-9]{40}package buildworker
-
-import (
-	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"net/url"
-	"path"
-	"regexp"
-	"sort"
-	"strings"
-)
-
-var digestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
-)
+var commitPattern = regexp.MustCompile(`^[a-fA-F0-9]{40}$`)
 var githubPartPattern = regexp.MustCompile("^[A-Za-z0-9_.-]+$")
 var codenamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,63}$`)
 var branchPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$`)
