@@ -70,3 +70,14 @@ The guest init process receives one bounded envelope over the authenticated vsoc
 - Add a signed guest image build pipeline and verify the image digest before provisioning.
 - Add one-time bootstrap credential redemption and revocation in the control plane.
 - Implement a separate signing service backed by KMS/HSM; never expose release signing keys to the guest VM.
+
+
+## One-time guest credential lifecycle
+
+`POST /api/internal/guest-bootstrap/issue` is authenticated with the platform worker service credential. Its strict body contains `jobId`, `workerId`, and the active `leaseToken`. The platform locks and verifies the unexpired lease, then returns a random 256-bit URL-safe credential with a 90-second expiry. Only its SHA-256 digest is persisted. Re-issuing for the same attempt replaces the previous digest.
+
+`POST /api/internal/guest-bootstrap/redeem` accepts that credential as an HTTPS bearer token. Redemption atomically deletes the digest and returns the immutable job snapshot, snapshot digest, worker identity, attempt, and current lease token. A replay or concurrent second redemption fails. The lease must still be active and match the original worker and attempt.
+
+The credential table has no plaintext credential column. The issue endpoint remains unavailable unless build workers are explicitly enabled. This API does not provision a VM or enable Android builds.
+
+The host agent must issue only after obtaining a valid platform lease and deliver the credential exclusively over the authenticated vsock bootstrap envelope. The guest must verify the signed envelope before redemption and never write credentials to disk or logs. The missing scheduler still must own claim → issue → provision → bootstrap → monitor → terminate → signed stopped-state confirmation.
