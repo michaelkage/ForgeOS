@@ -28,7 +28,7 @@ type pinnedProject struct {
 	Remote string `xml:"remote,attr"`
 	Revision string `xml:"revision,attr"`
 }
-type localManifest struct { XMLName xml.Name `xml:"manifest"`; Projects []pinnedProject `xml:"project"` }
+type localManifest struct { XMLName xml.Name `xml:"manifest"`; Extends []pinnedProject `xml:"extend-project"` }
 type pinnedSource struct { Kind string; URL string; SHA string; SourcePath string }
 
 func normalizeRepoURL(raw string) string {
@@ -69,7 +69,7 @@ func pinManifest(content string, s Snapshot) ([]byte, []pinnedSource, error) {
 			projectPath:=p.Path;if projectPath==""{projectPath=p.Name}
 			if !safeRelativePath(projectPath){return nil,nil,fmt.Errorf("manifest project %s has an unsafe path",p.Name)}
 			key:=projectPath+"@"+src.SHA
-			if !seenPins[key]{pins=append(pins,pinnedProject{Name:p.Name,Path:projectPath,Remote:remote,Revision:src.SHA});seenPins[key]=true}
+			if !seenPins[key]{pins=append(pins,pinnedProject{Name:p.Name,Path:projectPath,Revision:src.SHA});seenPins[key]=true}
 			found=true
 		}
 		if !found{external=append(external,src)}
@@ -77,7 +77,7 @@ func pinManifest(content string, s Snapshot) ([]byte, []pinnedSource, error) {
 	var out bytes.Buffer
 	if len(pins)>0{
 		enc:=xml.NewEncoder(&out);enc.Indent("","  ")
-		if err:=enc.Encode(localManifest{Projects:pins});err!=nil{return nil,nil,err}
+		if err:=enc.Encode(localManifest{Extends:pins});err!=nil{return nil,nil,err}
 		if err:=enc.Flush();err!=nil{return nil,nil,err}
 	}
 	return out.Bytes(),external,nil
