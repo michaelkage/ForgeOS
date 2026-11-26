@@ -101,7 +101,7 @@ func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
 	for _,raw:=range cfg.DNSResolvers { a,e:=netip.ParseAddr(raw);if e!=nil||!a.Is4()||!a.IsGlobalUnicast()||a.IsPrivate()||a.IsLinkLocalUnicast()||isForbiddenEgress(netip.PrefixFrom(a,32)){return nil,errors.New("DNS resolver must be a public unicast IPv4 address")} }
 	if len(cfg.DNSResolvers)==0{return nil,errors.New("at least one explicitly allowlisted public DNS resolver is required")}
 	if err:=os.MkdirAll(cfg.StateDir,0700);err!=nil{return nil,err};if err:=os.MkdirAll(cfg.ChrootBase,0700);err!=nil{return nil,err}
-	for _,p:=range []string{cfg.StateDir,cfg.ChrootBase}{if e:=verifyRootPath(p);e!=nil{return nil,fmt.Errorf("unsafe runtime directory %s: %w",p,e)}}
+	for _,p:=range []string{cfg.StateDir,cfg.ChrootBase}{if e:=verifyRootPath(p);e!=nil{return nil,fmt.Errorf("unsafe runtime directory %s: %w",p,e)};st,e:=os.Lstat(p);if e!=nil{return nil,e};if st.Mode().Perm()&0077!=0{return nil,fmt.Errorf("runtime directory %s must be mode 0700",p)}}
 	return &LinuxRuntime{cfg:cfg,evidence:map[string]IsolationProfile{}},nil
 }
 
