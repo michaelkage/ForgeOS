@@ -73,7 +73,7 @@ func Run(ctx context.Context,cfg Config)error{
 func captureSourceLockfile(ctx context.Context,workspace string,s Snapshot,external []pinnedSource)(sourceLockfile,error){
 	out:=sourceLockfile{SchemaVersion:1,Projects:make([]lockedProject,0,512)}
 	cmdCtx,cancel:=context.WithTimeout(ctx,10*time.Minute);defer cancel()
-	cmd:=exec.CommandContext(cmdCtx,"/usr/local/bin/repo","forall","-c",`printf '%s\\t%s\\t%s\\n' "$REPO_PATH" "$REPO_PROJECT" "$(git rev-parse --verify HEAD)"`)
+	cmd:=exec.CommandContext(cmdCtx,"/usr/local/bin/repo","forall","-c",`printf '%s\t%s\t%s\n' "$REPO_PATH" "$REPO_PROJECT" "$(git rev-parse --verify HEAD)"`)
 	cmd.Dir=workspace
 	cmd.Env=[]string{"PATH=/usr/local/bin:/usr/bin:/bin","HOME=/workspace/forgeos","TMPDIR=/tmp","LANG=C.UTF-8","LC_ALL=C.UTF-8","GIT_TERMINAL_PROMPT=0","GIT_CONFIG_NOSYSTEM=1","GIT_CONFIG_GLOBAL=/dev/null"}
 	var stdout,stderr bytes.Buffer
