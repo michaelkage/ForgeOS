@@ -57,6 +57,7 @@ type LinuxRuntime struct {
 	evidence map[string]IsolationProfile
 	terminating map[string]bool
 	verifiedAt map[string]time.Time
+	hostVerifiedAt time.Time
 }
 
 type runtimeMeta struct {
