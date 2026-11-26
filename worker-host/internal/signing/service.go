@@ -43,7 +43,7 @@ func verifyProtectedFile(file string,private,executable bool)error{
 	st,err:=os.Lstat(file);if err!=nil{return err}
 	if !st.Mode().IsRegular()||st.Mode()&os.ModeSymlink!=0{return errors.New("must be a regular non-symlink file")}
 	sys,ok:=st.Sys().(*syscall.Stat_t);if !ok||sys.Uid!=0{return errors.New("must be owned by root")}
-	if st.Mode().Perm()&0022!=0{return errors.New("must not be group- or world-writable")}
+	if st.Mode().Perm()&0222!=0{return errors.New("protected signing dependency must be non-writable by every user")}
 	if private&&st.Mode().Perm()&0007!=0{return errors.New("private key must not be accessible to other users")}
 	if executable&&st.Mode().Perm()&0111==0{return errors.New("required signing tool is not executable")}
 	return nil
@@ -107,7 +107,9 @@ func(s *Service) sign(w http.ResponseWriter,r *http.Request){
 	reservation:=ledgerRecord{JobID:job,Attempt:attempt,SnapshotSHA256:snapshotSHA,InputSHA256:inputSHA}
 	if err:=s.ledger.reserve(reservation);err!=nil{http.Error(w,"signing attempt reservation failed",http.StatusConflict);return}
 	outputPath:=filepath.Join(s.cfg.WorkDir,"signed",job+"-"+strconv.Itoa(attempt)+".zip")
-	if err:=os.MkdirAll(filepath.Dir(outputPath),0700);err!=nil{s.failReservation(reservation);http.Error(w,"signing workspace unavailable",http.StatusInternalServerError);return}
+	signedDir:=filepath.Dir(outputPath)
+	if err:=os.MkdirAll(signedDir,0700);err!=nil{s.failReservation(reservation);http.Error(w,"signing workspace unavailable",http.StatusInternalServerError);return}
+	dirInfo,err:=os.Lstat(signedDir);if err!=nil||!dirInfo.IsDir()||dirInfo.Mode()&os.ModeSymlink!=0||dirInfo.Mode().Perm()&0077!=0{s.failReservation(reservation);http.Error(w,"signing output directory is not private",http.StatusInternalServerError);return}
 	partial:=outputPath+".partial"
 	for _,candidate:=range []string{outputPath,partial}{if _,err:=os.Lstat(candidate);err==nil{s.failReservation(reservation);http.Error(w,"signing output path already exists; operator recovery is required",http.StatusConflict);return}else if !os.IsNotExist(err){s.failReservation(reservation);http.Error(w,"signing output path cannot be inspected",http.StatusInternalServerError);return}}
 	if err:=s.runSign(ctx,inputPath,partial);err!=nil{s.failReservation(reservation);_ = os.Remove(partial);http.Error(w,"OTA signing failed",http.StatusUnprocessableEntity);return}
