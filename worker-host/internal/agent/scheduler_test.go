@@ -29,7 +29,7 @@ func schedulerTestConfig(api string)SchedulerConfig{return SchedulerConfig{
 
 func TestNewSchedulerRejectsUnpinnedImageAndUnsafeResourceProfile(t *testing.T){
 	rt:=&schedulerRuntime{states:map[string]string{}}
-	srv,err:=NewServer(Config{BearerToken:"01234567890123456789012345678901",SigningKey:make([]byte,ed25519.PrivateKeySize),StateDir:filepath.Join(t.TempDir(),"state"),Runtime:rt})
+	srv,err:=NewServer(Config{BearerToken:"01234567890123456789012345678901",SigningKey:ed25519.PrivateKey(make([]byte,ed25519.PrivateKeySize)),StateDir:filepath.Join(t.TempDir(),"state"),Runtime:rt})
 	if err!=nil{t.Fatal(err)}
 	cfg:=schedulerTestConfig("https://forgeos.example");cfg.ImageDigests=nil
 	if _,err:=NewScheduler(srv,cfg,"01234567890123456789012345678901");err==nil{t.Fatal("expected missing image digest rejection")}
