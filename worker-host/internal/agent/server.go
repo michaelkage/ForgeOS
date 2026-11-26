@@ -116,7 +116,7 @@ func (s *Server) handleProvision(w http.ResponseWriter, r *http.Request) {
 			writeError(w,409,"request_id_conflict"); return
 		}
 		resp, err := s.provisionResponse(existing, req.RequestID)
-		if err != nil { _ = s.cfg.Runtime.Terminate(existingID); writeError(w,500,"attestation_failed"); return }
+		if err != nil { _ = s.cfg.Runtime.Terminate(existingID); delete(s.instances,existingID); delete(s.requests,req.RequestID); _ = s.saveState(); writeError(w,500,"attestation_failed"); return }
 		writeJSON(w,200,resp); return
 	}
 	for _, existing := range s.instances {
@@ -231,6 +231,7 @@ func (s *Server) ProvisionLocal(req ProvisionRequest)(Instance,error){
 	if id,ok:=s.requests[req.RequestID];ok{
 		existing:=s.instances[id]
 		if existing.Instance.JobID!=req.JobID||existing.Instance.Attempt!=req.Attempt||existing.Instance.ImageDigest!=req.ImageDigest{return Instance{},errors.New("request ID is already bound to another job attempt")}
+		if evidence,ok:=s.cfg.Runtime.(interface{Evidence(string)(IsolationProfile,error)});ok{if _,err:=evidence.Evidence(id);err!=nil{return Instance{},err}}
 		return existing.Instance,nil
 	}
 	for _,existing:=range s.instances{if existing.Instance.JobID==req.JobID&&existing.Instance.Attempt==req.Attempt{return Instance{},errors.New("job attempt already has a VM")}}
