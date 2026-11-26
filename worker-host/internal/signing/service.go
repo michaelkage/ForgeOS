@@ -31,6 +31,7 @@ type Service struct { cfg Config; ledger *ledger; mux *http.ServeMux; slots chan
 func NewService(cfg Config)(*Service,error){
 	if err:=cfg.Validate();err!=nil{return nil,err}
 	for _,p:=range []string{cfg.TLSCertPath,cfg.TLSKeyPath,cfg.ClientCAPath,cfg.SignAPKJar,cfg.CertificatePath,cfg.PrivateKeyPath,cfg.JavaPath,cfg.JarSignerPath}{if err:=verifyProtectedFile(p,p==cfg.PrivateKeyPath||p==cfg.TLSKeyPath,p==cfg.JavaPath||p==cfg.JarSignerPath);err!=nil{return nil,fmt.Errorf("verify signing dependency %s: %w",p,err)}}
+	for _,item:=range []struct{path,want string}{{cfg.SignAPKJar,cfg.SignAPKJarSHA256},{cfg.CertificatePath,cfg.CertificateSHA256},{cfg.PrivateKeyPath,cfg.PrivateKeySHA256}}{got,_,err:=hashFile(item.path);if err!=nil{return nil,err};if got!=item.want{return nil,fmt.Errorf("pinned signing dependency digest mismatch: %s",item.path)}}
 	if err:=os.MkdirAll(cfg.WorkDir,0700);err!=nil{return nil,err}
 	st,err:=os.Lstat(cfg.WorkDir);if err!=nil{return nil,err};if !st.IsDir()||st.Mode()&os.ModeSymlink!=0||st.Mode().Perm()&0077!=0{return nil,errors.New("signing work directory must be a directory inaccessible to other users")}
 	l,err:=openLedger(filepath.Join(cfg.WorkDir,"signing-ledger.jsonl"));if err!=nil{return nil,err}
