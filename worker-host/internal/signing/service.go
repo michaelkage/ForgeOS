@@ -11,8 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash"
-	"io"
+		"io"
 	"net"
 	"net/http"
 	"os"
@@ -22,8 +21,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
-	"time"
+		"time"
 )
 
 var uuidPattern=regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
@@ -34,7 +32,7 @@ func NewService(cfg Config)(*Service,error){
 	if err:=cfg.Validate();err!=nil{return nil,err}
 	for _,p:=range []string{cfg.TLSCertPath,cfg.TLSKeyPath,cfg.ClientCAPath,cfg.SignAPKJar,cfg.CertificatePath,cfg.PrivateKeyPath,cfg.JavaPath,cfg.JarSignerPath}{if err:=verifyProtectedFile(p,p==cfg.PrivateKeyPath||p==cfg.TLSKeyPath);err!=nil{return nil,fmt.Errorf("verify signing dependency %s: %w",p,err)}}
 	if err:=os.MkdirAll(cfg.WorkDir,0700);err!=nil{return nil,err}
-	st,err:=os.Stat(cfg.WorkDir);if err!=nil{return nil,err};if !st.IsDir()||st.Mode().Perm()&0007!=0{return nil,errors.New("signing work directory must be a directory inaccessible to other users")}
+	st,err:=os.Stat(cfg.WorkDir);if err!=nil{return nil,err};if !st.IsDir()||st.Mode().Perm()&0077!=0{return nil,errors.New("signing work directory must be a directory inaccessible to other users")}
 	l,err:=openLedger(filepath.Join(cfg.WorkDir,"signing-ledger.jsonl"));if err!=nil{return nil,err}
 	s:=&Service{cfg:cfg,ledger:l,mux:http.NewServeMux()}
 	s.mux.HandleFunc("GET /healthz",s.health)
@@ -60,8 +58,18 @@ func(s *Service) Serve()error{
 	tlsConfig,err:=s.TLSConfig();if err!=nil{return err}
 	listener,err:=net.Listen("tcp",s.cfg.Listen);if err!=nil{return err}
 	tlsListener:=tls.NewListener(listener,tlsConfig)
-	server:=&http.Server{Handler:s.Handler(),ReadHeaderTimeout:10*time.Second,IdleTimeout:60*time.Second,MaxHeaderBytes:16*1024}
-	return server.Serve(tlsListener)
+	server:=&http.Server{Handler:s.Handler(),ReadHeaderTimeout:10*time.Second,ReadTimeout:s.cfg.SignTimeout+5*time.Minute,IdleTimeout:60*time.Second,MaxHeaderBytes:16*1024}
+	done:=make(chan error,1)
+	go func(){done<-server.Serve(tlsListener)}()
+	select{
+	case <-ctx.Done():
+		shutdownCtx,cancel:=context.WithTimeout(context.Background(),30*time.Second);defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+		return nil
+	case err:=<-done:
+		if errors.Is(err,http.ErrServerClosed){return nil}
+		return err
+	}
 }
 func securityHeaders(next http.Handler)http.Handler{return http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){w.Header().Set("Cache-Control","no-store");w.Header().Set("X-Content-Type-Options","nosniff");next.ServeHTTP(w,r)})}
 func(s *Service) health(w http.ResponseWriter,r *http.Request){w.Header().Set("Content-Type","application/json");_,_=io.WriteString(w,`{"status":"ok"}`)}
@@ -144,5 +152,3 @@ func hashFile(file string)(string,int64,error){
 	f,err:=os.Open(file);if err!=nil{return "",0,err};defer f.Close()
 	h:=sha256.New();n,err:=io.Copy(h,f);if err!=nil{return "",n,err};return hex.EncodeToString(h.Sum(nil)),n,nil
 }
-var _ hash.Hash
-var _ = syscall.Stat_t{}
