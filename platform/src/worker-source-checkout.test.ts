@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkoutPinnedSources } from "./worker-source-checkout.js";
@@ -131,6 +131,50 @@ test("stops before the next source when cancellation is signalled", async () => 
       }
     }), /lease lost/);
     assert.equal(commands, 4);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+
+test("rejects cancellation during the final command even with a single source", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "forgeos-checkout-final-cancel-"));
+  const controller = new AbortController();
+  const singleSourceSnapshot: WorkerBuildSnapshot = { ...snapshot, sourceInputs: [] };
+  const singleSourceDigest = createHash("sha256").update(canonicalJson(singleSourceSnapshot)).digest("hex");
+  try {
+    await assert.rejects(() => checkoutPinnedSources(singleSourceSnapshot, singleSourceDigest, {
+      workspace,
+      signal: controller.signal,
+      runCommand: async (_command, args): Promise<SupervisedCommandResult> => {
+        if (args.includes("rev-parse")) controller.abort(new Error("final command lease lost"));
+        return {
+          exitCode: 0,
+          signal: null,
+          stdout: args.includes("rev-parse") ? sha : "",
+          stderr: "",
+          durationMs: 1
+        };
+      }
+    }), /final command lease lost/);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("does not create workspace files when checkout is already cancelled", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "forgeos-checkout-pre-cancel-"));
+  const controller = new AbortController();
+  controller.abort(new Error("cancelled before checkout"));
+  try {
+    await assert.rejects(() => checkoutPinnedSources(snapshot, snapshotSha256, {
+      workspace,
+      signal: controller.signal,
+      runCommand: async () => {
+        throw new Error("git must not run for an aborted checkout");
+      }
+    }), /cancelled before checkout/);
+    assert.deepEqual(await readdir(workspace), []);
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
