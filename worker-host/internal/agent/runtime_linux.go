@@ -394,7 +394,7 @@ func (r *LinuxRuntime) moveKvmPitThreads()error{
 	owners:=map[int]string{}
 	entries,err:=os.ReadDir(r.cfg.StateDir);if err!=nil&&!os.IsNotExist(err){return err}
 	for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if e!=nil{continue};b,e:=os.ReadFile(filepath.Join(m.CgroupPath,"cgroup.procs"));if e!=nil{continue};for _,raw:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(raw);if pid>1{owners[pid]=m.CgroupPath}}}
-	for _,entry:=range procs{threadPID,e:=strconv.Atoi(entry.Name());if e!=nil{continue};comm,e:=os.ReadFile(filepath.Join("/proc",entry.Name(),"comm"));if e!=nil{continue};name:=strings.TrimSpace(string(comm));if !strings.HasPrefix(name,"kvm-pit/"){continue};targetPID,e:=strconv.Atoi(strings.TrimPrefix(name,"kvm-pit/"));if e!=nil{continue};path,ok:=owners[targetPID];if !ok{continue};group,e:=os.ReadFile(filepath.Join(path,"cgroup.procs"));if e!=nil{return e};found:=false;for _,raw:=range strings.Fields(string(group)){pid,_:=strconv.Atoi(raw);if pid==threadPID{found=true;break}};if found{continue};if e=os.WriteFile(filepath.Join(path,"cgroup.procs"),[]byte(strconv.Itoa(threadPID)),0644);e!=nil{if _,statErr:=os.Stat(filepath.Join("/proc",entry.Name()));os.IsNotExist(statErr){continue};return fmt.Errorf("move KVM PIT thread %d into VM cgroup: %w",threadPID,e)}}
+	for _,entry:=range procs{threadPID,e:=strconv.Atoi(entry.Name());if e!=nil{continue};comm,e:=os.ReadFile(filepath.Join("/proc",entry.Name(),"comm"));if e!=nil{continue};name:=strings.TrimSpace(string(comm));if !strings.HasPrefix(name,"kvm-pit/"){continue};targetPID,e:=strconv.Atoi(strings.TrimPrefix(name,"kvm-pit/"));if e!=nil{continue};path,ok:=owners[targetPID];if !ok{continue};group,e:=os.ReadFile(filepath.Join(path,"cgroup.procs"));if e!=nil{return e};found:=false;for _,raw:=range strings.Fields(string(group)){pid,_:=strconv.Atoi(raw);if pid==threadPID{found=true;break}};if found{continue};if e=os.WriteFile(filepath.Join(path,"cgroup.procs"),[]byte(strconv.Itoa(threadPID)),0644);e!=nil{if _,statErr:=os.Stat(filepath.Join("/proc",entry.Name()));os.IsNotExist(statErr){continue};return fmt.Errorf("move KVM PIT thread %d into VM cgroup: %w",threadPID,e)};verify,e:=os.ReadFile(filepath.Join(path,"cgroup.procs"));if e!=nil||!strings.Contains(" "+string(verify)+" "," "+strconv.Itoa(threadPID)+" "){return fmt.Errorf("KVM PIT thread %d was not confirmed in VM cgroup",threadPID)}}
 	return nil
 }
 func verifyFirecrackerInCgroup(m runtimeMeta)error{
@@ -406,7 +406,10 @@ func killKvmPitThreadsForCgroup(m runtimeMeta)error{
 	b,err:=os.ReadFile(filepath.Join(m.CgroupPath,"cgroup.procs"));if err!=nil{if os.IsNotExist(err){return nil};return err}
 	targets:=map[int]bool{};for _,raw:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(raw);if pid>1{targets[pid]=true}}
 	entries,err:=os.ReadDir("/proc");if err!=nil{return err}
-	for _,entry:=range entries{threadPID,e:=strconv.Atoi(entry.Name());if e!=nil{continue};comm,e:=os.ReadFile(filepath.Join("/proc",entry.Name(),"comm"));if e!=nil{continue};name:=strings.TrimSpace(string(comm));if !strings.HasPrefix(name,"kvm-pit/"){continue};target,e:=strconv.Atoi(strings.TrimPrefix(name,"kvm-pit/"));if e!=nil||!targets[target]{continue};_ = syscall.Kill(threadPID,syscall.SIGKILL)}
+	var killed []int
+	for _,entry:=range entries{threadPID,e:=strconv.Atoi(entry.Name());if e!=nil{continue};comm,e:=os.ReadFile(filepath.Join("/proc",entry.Name(),"comm"));if e!=nil{continue};name:=strings.TrimSpace(string(comm));if !strings.HasPrefix(name,"kvm-pit/"){continue};target,e:=strconv.Atoi(strings.TrimPrefix(name,"kvm-pit/"));if e!=nil||!targets[target]{continue};if e=syscall.Kill(threadPID,syscall.SIGKILL);e==nil{killed=append(killed,threadPID)}}
+	deadline:=time.Now().Add(2*time.Second);for time.Now().Before(deadline){alive:=false;for _,pid:=range killed{if _,e:=os.Stat(filepath.Join("/proc",strconv.Itoa(pid)));e==nil{alive=true;break}};if !alive{return nil};time.Sleep(50*time.Millisecond)}
+	for _,pid:=range killed{if _,e:=os.Stat(filepath.Join("/proc",strconv.Itoa(pid)));e==nil{return fmt.Errorf("KVM PIT thread %d remains after termination",pid)}}
 	return nil
 }
 
@@ -415,7 +418,17 @@ func ipLinkExists(name string)(bool,error){cmd:=exec.Command("/usr/sbin/ip","lin
 
 func isMountPoint(path string)(bool,error){b,e:=os.ReadFile("/proc/self/mountinfo");if e!=nil{return false,e};clean:=filepath.Clean(path);for _,line:=range strings.Split(string(b),"\n"){f:=strings.Fields(line);if len(f)>4&&f[4]==clean{return true,nil}};return false,nil}
 func (r *LinuxRuntime) Recover()error{r.mu.Lock();defer r.mu.Unlock();entries,e:=os.ReadDir(r.cfg.StateDir);if os.IsNotExist(e){return nil};if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if os.IsNotExist(e){_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,entry.Name()));continue};if e!=nil{errs=append(errs,e);continue};if e=r.cleanup(m);e!=nil{errs=append(errs,e)}};if len(errs)>0{return errors.Join(errs...)};return nil}
-func (r *LinuxRuntime) SweepExpired()error{r.mu.Lock();defer r.mu.Unlock();entries,e:=os.ReadDir(r.cfg.StateDir);if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if os.IsNotExist(e){_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,entry.Name()));continue};if e!=nil{errs=append(errs,e);continue};if time.Now().After(m.Deadline){if e=r.cleanup(m);e!=nil{errs=append(errs,e)}}};if len(errs)>0{return errors.Join(errs...)};return nil}
+func (r *LinuxRuntime) SweepExpired()error{
+	r.mu.Lock();defer r.mu.Unlock()
+	if err:=r.moveKvmPitThreads();err!=nil{
+		entries,_:=os.ReadDir(r.cfg.StateDir)
+		for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};if m,e:=r.readMeta(entry.Name());e==nil{_ = r.cleanup(m)}}
+		return fmt.Errorf("KVM timer thread could not be bound to VM CPU cgroup; all active VMs were torn down: %w",err)
+	}
+	entries,e:=os.ReadDir(r.cfg.StateDir);if os.IsNotExist(e){return nil};if e!=nil{return e};var errs []error
+	for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if os.IsNotExist(e){_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,entry.Name()));continue};if e!=nil{errs=append(errs,e);continue};if time.Now().After(m.Deadline){if e=r.cleanup(m);e!=nil{errs=append(errs,e)}}}
+	if len(errs)>0{return errors.Join(errs...)};return nil
+}
 func verifyImageDigest(path,digest string)error{f,e:=os.Open(path);if e!=nil{return e};defer f.Close();h:=sha256.New();if _,e=io.Copy(h,f);e!=nil{return e};if "sha256:"+hex.EncodeToString(h.Sum(nil))!=digest{return errors.New("worker image bytes do not match the requested immutable SHA-256 digest")};return nil}
 func (r *LinuxRuntime) writeMeta(m runtimeMeta)error{b,e:=json.Marshal(m);if e!=nil{return e};tmp:=filepath.Join(r.cfg.StateDir,m.ID,"runtime.json.tmp");if e=os.WriteFile(tmp,b,0600);e!=nil{return e};return os.Rename(tmp,filepath.Join(r.cfg.StateDir,m.ID,"runtime.json"))}
 func (r *LinuxRuntime) readMeta(id string)(runtimeMeta,error){if !instancePattern.MatchString(id){return runtimeMeta{},errors.New("invalid instance ID")};b,e:=os.ReadFile(filepath.Join(r.cfg.StateDir,id,"runtime.json"));if e!=nil{return runtimeMeta{},e};var m runtimeMeta;e=json.Unmarshal(b,&m);return m,e}
