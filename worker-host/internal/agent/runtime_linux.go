@@ -296,7 +296,7 @@ func (r *LinuxRuntime) createCgroup(m runtimeMeta,res Resources)error{
 	if err:=os.WriteFile(filepath.Join(parent,"cgroup.subtree_control"),[]byte("+cpu +memory +pids +io"),0640);err!=nil{return fmt.Errorf("enable cgroup v2 controllers: %w",err)}
 	if err:=os.Mkdir(m.CgroupPath,0750);err!=nil{return err}
 	quota:=res.CPUCores*100000
-	values:=map[string]string{"memory.max":strconv.FormatInt(int64(res.MemoryMiB)*1024*1024,10),"memory.swap.max":"0","pids.max":strconv.Itoa(res.ProcessLimit),"cpu.max":fmt.Sprintf("%d 100000",quota)}
+	values:=map[string]string{"memory.max":strconv.FormatInt(int64(res.MemoryMiB)*1024*1024,10),"memory.swap.max":"0","memory.oom.group":"1","pids.max":strconv.Itoa(res.ProcessLimit),"cpu.max":fmt.Sprintf("%d 100000",quota)}
 	st,e:=os.Stat(m.DiskPath);if e!=nil{return e};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok{return errors.New("cannot determine ephemeral disk backing device")}
 	dev:=uint64(sys.Dev);major:=(dev>>8)&0xfff | (dev>>32)&0xfffff000;minor:=dev&0xff | (dev>>12)&0xffffff00
 	values["io.max"]=fmt.Sprintf("%d:%d rbps=%d wbps=%d riops=1000 wiops=1000",major,minor,r.cfg.IOBytesPerSecond,r.cfg.IOBytesPerSecond)
@@ -323,6 +323,14 @@ func (r *LinuxRuntime) createEncryptedDisk(m runtimeMeta,diskGiB int,baseImage s
 	dst,err:=os.OpenFile(target,os.O_CREATE|os.O_EXCL|os.O_WRONLY,0600);if err!=nil{return err}
 	written,copyErr:=io.Copy(dst,src);closeErr:=dst.Close();if copyErr!=nil{return copyErr};if closeErr!=nil{return closeErr};if written>=int64(diskGiB)*1024*1024*1024{return errors.New("immutable root filesystem does not fit encrypted ephemeral disk")}
 	if err:=os.Chown(target,m.UID,m.GID);err!=nil{return err}
+	baseInfo,err:=os.Stat(baseImage);if err!=nil{return err}
+	workspaceBytes:=int64(diskGiB)*1024*1024*1024-baseInfo.Size()-2*1024*1024*1024
+	if workspaceBytes<1024*1024*1024{return errors.New("encrypted disk cannot fit the immutable rootfs and a minimum 1 GiB workspace")}
+	workspacePath:=filepath.Join(root,"var/lib/forgeos/workspace.ext4")
+	workspace,err:=os.OpenFile(workspacePath,os.O_CREATE|os.O_EXCL|os.O_RDWR,0600);if err!=nil{return err}
+	if err=workspace.Truncate(workspaceBytes);err!=nil{_ = workspace.Close();return err};if err=workspace.Close();err!=nil{return err}
+	if err:=run(context.Background(),"/usr/sbin/mkfs.ext4","-F","-m","0",workspacePath);err!=nil{return fmt.Errorf("format encrypted guest workspace: %w",err)}
+	if err:=os.Chown(workspacePath,m.UID,m.GID);err!=nil{return err}
 	return nil
 }
 
@@ -378,7 +386,8 @@ func (r *LinuxRuntime) launchFirecracker(m runtimeMeta,req ProvisionRequest,kern
 	drive:=map[string]any{"drive_id":"rootfs","path_on_host":"/var/lib/forgeos/rootfs.ext4","is_root_device":true,"is_read_only":false}
 	network:=map[string]any{"iface_id":"eth0","guest_mac":guestMAC(m.ID),"host_dev_name":m.Tap}
 	vsock:=map[string]any{"guest_cid":3,"uds_path":"/run/forgeos-vsock.sock"}
-	for path,value:=range map[string]any{"/machine-config":machine,"/boot-source":boot,"/drives/rootfs":drive,"/network-interfaces/eth0":network,"/vsock":vsock}{if err:=api.Put(path,value);err!=nil{_ = cmd.Process.Kill();return fmt.Errorf("configure Firecracker %s: %w",path,err)}}
+	workspace:=map[string]any{"drive_id":"workspace","path_on_host":"/var/lib/forgeos/workspace.ext4","is_root_device":false,"is_read_only":false}
+	for path,value:=range map[string]any{"/machine-config":machine,"/boot-source":boot,"/drives/rootfs":drive,"/drives/workspace":workspace,"/network-interfaces/eth0":network,"/vsock":vsock}{if err:=api.Put(path,value);err!=nil{_ = cmd.Process.Kill();return fmt.Errorf("configure Firecracker %s: %w",path,err)}}
 	if err:=api.Put("/actions",map[string]any{"action_type":"InstanceStart"});err!=nil{_ = cmd.Process.Kill();return err}
 	return nil
 }
