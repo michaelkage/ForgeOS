@@ -63,6 +63,11 @@ type runtimeMeta struct {
 	GuestIP string `json:"guestIp"`
 	GatewayIP string `json:"gatewayIp"`
 	NetworkCIDR string `json:"networkCidr"`
+	NetNS string `json:"netns"`
+	HostVeth string `json:"hostVeth"`
+	GuestVeth string `json:"guestVeth"`
+	HostVethIP string `json:"hostVethIp"`
+	GuestVethIP string `json:"guestVethIp"`
 	Mapper string `json:"mapper"`
 	PolicyTable string `json:"policyTable"`
 	NATTable string `json:"natTable"`
@@ -102,6 +107,8 @@ func (r *LinuxRuntime) Provision(req ProvisionRequest,id string) error {
 	r.mu.Lock();defer r.mu.Unlock()
 	if !instancePattern.MatchString(id){return errors.New("invalid instance ID")}
 	if err:=r.preflight();err!=nil{return err}
+	if err:=regularRootOwned(r.cfg.JailerPath);err!=nil{return fmt.Errorf("jailer binary rejected: %w",err)}
+	if err:=regularRootOwned(r.cfg.FirecrackerPath);err!=nil{return fmt.Errorf("Firecracker binary rejected: %w",err)}
 	kernel:=r.cfg.KernelPaths[req.Architecture];baseImage:=r.cfg.ImagePaths[req.ImageDigest];cidrs,ok:=r.cfg.EgressPolicies[req.EgressPolicyID]
 	if kernel==""||baseImage==""||!ok{return errors.New("architecture, immutable image digest, or egress policy is not allowlisted")}
 	if err:=regularRootOwned(kernel);err!=nil{return fmt.Errorf("kernel image rejected: %w",err)}
@@ -158,7 +165,7 @@ func (r *LinuxRuntime) preflight()error{
 	if uint64(fs.Type)!=0x63677270{return errors.New("cgroup v2 is required")}
 	controllers,err:=os.ReadFile("/sys/fs/cgroup/cgroup.controllers");if err!=nil{return err}
 	for _,c:=range []string{"cpu","memory","pids","io"}{if !strings.Contains(" "+string(controllers)+" "," "+c+" "){return fmt.Errorf("cgroup v2 controller %s is unavailable",c)}}
-	for _,p:=range []string{r.cfg.JailerPath,r.cfg.FirecrackerPath,"/usr/sbin/cryptsetup","/usr/sbin/mkfs.ext4","/usr/bin/mount","/usr/bin/umount","/usr/sbin/ip","/usr/sbin/nft","/usr/bin/setfacl"}{if _,err:=os.Stat(p);err!=nil{return fmt.Errorf("required host executable %s unavailable",p)}}
+	for _,p:=range []string{r.cfg.JailerPath,r.cfg.FirecrackerPath,"/usr/sbin/cryptsetup","/usr/sbin/mkfs.ext4","/usr/bin/mount","/usr/bin/umount","/usr/sbin/ip","/usr/sbin/nft","/usr/bin/setfacl","/usr/sbin/sysctl"}{if _,err:=os.Stat(p);err!=nil{return fmt.Errorf("required host executable %s unavailable",p)}}
 	return nil
 }
 
@@ -170,17 +177,22 @@ func regularRootOwned(path string)error{
 }
 
 func (r *LinuxRuntime) makeMeta(req ProvisionRequest,id string)(runtimeMeta,error){
-	sum:=sha256.Sum256([]byte(id));slot:=int(sum[0])<<8|int(sum[1]);slot=slot%2000
-	uid:=r.cfg.VMMUIDBase+slot;gid:=r.cfg.VMMGIDBase+slot
-	if uid<10000||gid<10000{return runtimeMeta{},errors.New("invalid VMM identity")}
-	netIndex:=int(sum[2])<<8|int(sum[3]);netIndex=netIndex%16000
-	base:=uint32(0x0afd0000)+uint32(netIndex*4)
-	gateway:=netip.AddrFrom4([4]byte{byte(base>>24),byte(base>>16),byte(base>>8),byte(base)})
-	guest:=gateway.Next()
-	network:=netip.PrefixFrom(gateway,30).Masked()
-	short:=hex.EncodeToString(sum[:6])
-	jailDir:=filepath.Join(r.cfg.ChrootBase,"firecracker",id)
-	return runtimeMeta{ID:id,CreatedAt:time.Now().UTC(),Deadline:time.Now().Add(time.Duration(req.Resources.WallTimeSeconds)*time.Second).UTC(),UID:uid,GID:gid,Tap:"ft"+short[:11],GuestIP:guest.String(),GatewayIP:gateway.String(),NetworkCIDR:network.String(),Mapper:"fg"+short,PolicyTable:"forgeos_"+short,NATTable:"forgeos_nat_"+short,CgroupPath:filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent,id),JailDir:jailDir,RootDir:filepath.Join(jailDir,"root"),DiskPath:filepath.Join(r.cfg.StateDir,id,"ephemeral.luks")},nil
+	sum:=sha256.Sum256([]byte(id))
+	usedUID:=map[int]bool{};usedNet:=map[string]bool{}
+	entries,_:=os.ReadDir(r.cfg.StateDir)
+	for _,entry:=range entries{if !entry.IsDir(){continue};b,e:=os.ReadFile(filepath.Join(r.cfg.StateDir,entry.Name(),"runtime.json"));if e!=nil{continue};var old runtimeMeta;if json.Unmarshal(b,&old)==nil{usedUID[old.UID]=true;usedNet[old.NetworkCIDR]=true}}
+	slot:=int(sum[0])<<8|int(sum[1]);slot%=2000;uid,gid:=0,0
+	for n:=0;n<2000;n++{candidate:=(slot+n)%2000;u:=r.cfg.VMMUIDBase+candidate;if !usedUID[u]{uid=u;gid=r.cfg.VMMGIDBase+candidate;break}}
+	if uid==0||gid==0{return runtimeMeta{},errors.New("no free per-VM VMM identity remains")}
+	netSlot:=int(sum[2])<<8|int(sum[3]);netSlot%=16000
+	var gateway,guest,hostVethIP,guestVethIP netip.Addr
+	var network netip.Prefix
+	found:=false
+	for n:=0;n<16000;n++{idx:=(netSlot+n)%16000;base:=uint32(0x0afd0000)+uint32(idx*4);g:=netip.AddrFrom4([4]byte{byte(base>>24),byte(base>>16),byte(base>>8),byte(base)});p:=netip.PrefixFrom(g,30).Masked();if usedNet[p.String()]{continue};gateway=g;guest=g.Next();network=p
+		vbase:=uint32(0x0afc0000)+uint32(idx*4);hostVethIP=netip.AddrFrom4([4]byte{byte(vbase>>24),byte(vbase>>16),byte(vbase>>8),byte(vbase)});guestVethIP=hostVethIP.Next();found=true;break}
+	if !found{return runtimeMeta{},errors.New("no free per-VM network range remains")}
+	short:=hex.EncodeToString(sum[:6]);jailDir:=filepath.Join(r.cfg.ChrootBase,"firecracker",id)
+	return runtimeMeta{ID:id,CreatedAt:time.Now().UTC(),Deadline:time.Now().Add(time.Duration(req.Resources.WallTimeSeconds)*time.Second).UTC(),UID:uid,GID:gid,Tap:"ft"+short[:11],GuestIP:guest.String(),GatewayIP:gateway.String(),NetworkCIDR:network.String(),NetNS:"fn"+short[:11],HostVeth:"fh"+short[:11],GuestVeth:"fv"+short[:11],HostVethIP:hostVethIP.String(),GuestVethIP:guestVethIP.String(),Mapper:"fg"+short,PolicyTable:"forgeos_"+short,NATTable:"forgeos_nat_"+short,CgroupPath:filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent,id),JailDir:jailDir,RootDir:filepath.Join(jailDir,"root"),DiskPath:filepath.Join(r.cfg.StateDir,id,"ephemeral.luks"),Resources:req.Resources,EgressPolicyID:req.EgressPolicyID},nil
 }
 
 func (r *LinuxRuntime) createCgroup(m runtimeMeta,res Resources)error{
@@ -220,19 +232,35 @@ func (r *LinuxRuntime) createEncryptedDisk(m runtimeMeta,diskGiB int,baseImage s
 }
 
 func (r *LinuxRuntime) setupNetwork(m runtimeMeta,cidrs []string)error{
-	if err:=run(context.Background(),"/usr/sbin/ip","tuntap","add","dev",m.Tap,"mode","tap","user",strconv.Itoa(m.UID));err!=nil{return err}
-	if err:=run(context.Background(),"/usr/sbin/ip","addr","add",m.GatewayIP+"/30","dev",m.Tap);err!=nil{return err}
-	if err:=run(context.Background(),"/usr/sbin/ip","link","set",m.Tap,"up");err!=nil{return err}
+	if err:=run(context.Background(),"/usr/sbin/ip","netns","add",m.NetNS);err!=nil{return err}
+	if err:=run(context.Background(),"/usr/sbin/ip","link","add",m.HostVeth,"type","veth","peer","name",m.GuestVeth);err!=nil{return err}
+	if err:=run(context.Background(),"/usr/sbin/ip","link","set",m.GuestVeth,"netns",m.NetNS);err!=nil{return err}
+	if err:=run(context.Background(),"/usr/sbin/ip","addr","add",m.HostVethIP+"/30","dev",m.HostVeth);err!=nil{return err}
+	if err:=run(context.Background(),"/usr/sbin/ip","link","set",m.HostVeth,"up");err!=nil{return err}
+	ns:=func(args ...string)error{return run(context.Background(),"/usr/sbin/ip",append([]string{"netns","exec",m.NetNS,"ip"},args...)...)}
+	if err:=ns("link","set","lo","up");err!=nil{return err}
+	if err:=ns("addr","add",m.GuestVethIP+"/30","dev",m.GuestVeth);err!=nil{return err}
+	if err:=ns("link","set",m.GuestVeth,"up");err!=nil{return err}
+	if err:=ns("route","add","default","via",m.HostVethIP);err!=nil{return err}
+	if err:=run(context.Background(),"/usr/sbin/ip","netns","exec",m.NetNS,"sysctl","-w","net.ipv4.ip_forward=1");err!=nil{return err}
+	if err:=run(context.Background(),"/usr/sbin/ip","netns","exec",m.NetNS,"ip","tuntap","add","dev",m.Tap,"mode","tap","user",strconv.Itoa(m.UID));err!=nil{return err}
+	if err:=ns("addr","add",m.GatewayIP+"/30","dev",m.Tap);err!=nil{return err}
+	if err:=ns("link","set",m.Tap,"up");err!=nil{return err}
 	if err:=os.WriteFile("/proc/sys/net/ipv4/ip_forward",[]byte("1"),0644);err!=nil{return err}
-	allow:=make([]string,0,len(cidrs));for _,c:=range cidrs{p,e:=netip.ParsePrefix(c);if e!=nil||isForbiddenEgress(p){return errors.New("egress CIDR failed validation")};allow=append(allow,c)}
-	dns:=make([]string,0,len(r.cfg.DNSResolvers));for _,ip:=range r.cfg.DNSResolvers{dns=append(dns,ip)}
-	var rules strings.Builder
-	rules.WriteString("table inet "+m.PolicyTable+" { chain input { type filter hook input priority -300; policy accept; iifname \""+m.Tap+"\" drop; } chain forward { type filter hook forward priority -300; policy accept; iifname \""+m.Tap+"\" ct state established,related accept; ")
-	for _,c:=range allow{rules.WriteString("iifname \""+m.Tap+"\" ip daddr "+c+" tcp dport 443 accept; ")}
-	for _,ip:=range dns{rules.WriteString("iifname \""+m.Tap+"\" ip daddr "+ip+" udp dport 53 accept; iifname \""+m.Tap+"\" ip daddr "+ip+" tcp dport 53 accept; ")}
-	rules.WriteString("iifname \""+m.Tap+"\" drop; } }\n")
-	rules.WriteString("table ip "+m.NATTable+" { chain postrouting { type nat hook postrouting priority srcnat; policy accept; ip saddr "+m.GuestIP+" masquerade; } }\n")
-	return runInput(context.Background(),"/usr/sbin/nft",[]byte(rules.String()),"-f","-")
+	allow:=make([]string,0,len(cidrs));for _,raw:=range cidrs{p,e:=netip.ParsePrefix(raw);if e!=nil||isForbiddenEgress(p){return errors.New("egress CIDR failed validation")};allow=append(allow,raw)}
+	var host strings.Builder
+	host.WriteString("table inet "+m.PolicyTable+" { chain input { type filter hook input priority -300; policy accept; iifname \""+m.HostVeth+"\" drop; } chain forward { type filter hook forward priority -300; policy accept; iifname \""+m.HostVeth+"\" ct state established,related accept; ")
+	for _,cidr:=range allow{host.WriteString("iifname \""+m.HostVeth+"\" ip daddr "+cidr+" tcp dport 443 accept; ")}
+	for _,ip:=range r.cfg.DNSResolvers{host.WriteString("iifname \""+m.HostVeth+"\" ip daddr "+ip+" udp dport 53 accept; iifname \""+m.HostVeth+"\" ip daddr "+ip+" tcp dport 53 accept; ")}
+	host.WriteString("iifname \""+m.HostVeth+"\" drop; oifname \""+m.HostVeth+"\" ct state established,related accept; } }\n")
+	host.WriteString("table ip "+m.NATTable+" { chain postrouting { type nat hook postrouting priority srcnat; policy accept; ip saddr "+m.NetworkCIDR+" masquerade; } }\n")
+	if err:=runInput(context.Background(),"/usr/sbin/nft",[]byte(host.String()),"-f","-");err!=nil{return err}
+	var inside strings.Builder
+	inside.WriteString("table inet forgeos_guest { chain input { type filter hook input priority -300; policy accept; iifname \""+m.Tap+"\" drop; } chain forward { type filter hook forward priority -300; policy drop; iifname \""+m.Tap+"\" ct state established,related accept; ")
+	for _,cidr:=range allow{inside.WriteString("iifname \""+m.Tap+"\" oifname \""+m.GuestVeth+"\" ip daddr "+cidr+" tcp dport 443 accept; ")}
+	for _,ip:=range r.cfg.DNSResolvers{inside.WriteString("iifname \""+m.Tap+"\" oifname \""+m.GuestVeth+"\" ip daddr "+ip+" udp dport 53 accept; iifname \""+m.Tap+"\" oifname \""+m.GuestVeth+"\" ip daddr "+ip+" tcp dport 53 accept; ")}
+	inside.WriteString("iifname \""+m.Tap+"\" drop; oifname \""+m.Tap+"\" ct state established,related accept; } }\n")
+	return runInput(context.Background(),"/usr/sbin/ip",[]byte(inside.String()),"netns","exec",m.NetNS,"nft","-f","-")
 }
 
 func (r *LinuxRuntime) launchFirecracker(m runtimeMeta,req ProvisionRequest,kernel string)error{
@@ -244,7 +272,7 @@ func (r *LinuxRuntime) launchFirecracker(m runtimeMeta,req ProvisionRequest,kern
 	if err:=run(context.Background(),"/usr/bin/setfacl","-m","u:"+strconv.Itoa(m.UID)+":rw","/dev/kvm");err!=nil{return err}
 	apiSocket:=filepath.Join(m.RootDir,"run/firecracker.socket")
 	vsockSocket:=filepath.Join(m.RootDir,"run/forgeos-vsock.sock")
-	args:=[]string{"--id",m.ID,"--exec-file",r.cfg.FirecrackerPath,"--uid",strconv.Itoa(m.UID),"--gid",strconv.Itoa(m.GID),"--chroot-base-dir",r.cfg.ChrootBase,"--cgroup-version","2","--parent-cgroup",filepath.Join(r.cfg.CgroupParent,m.ID),"--resource-limit","no-file=4096","--new-pid-ns","--seccomp-level","2","--","--api-sock","/run/firecracker.socket"}
+	args:=[]string{"--id",m.ID,"--exec-file",r.cfg.FirecrackerPath,"--uid",strconv.Itoa(m.UID),"--gid",strconv.Itoa(m.GID),"--chroot-base-dir",r.cfg.ChrootBase,"--cgroup-version","2","--parent-cgroup",filepath.Join(r.cfg.CgroupParent,m.ID),"--netns","/run/netns/"+m.NetNS,"--resource-limit","no-file=4096","--new-pid-ns","--seccomp-level","2","--","--api-sock","/run/firecracker.socket"}
 	cmd:=exec.Command(r.cfg.JailerPath,args...)
 	cmd.Stdout=io.Discard;cmd.Stderr=io.Discard
 	if err:=cmd.Start();err!=nil{return fmt.Errorf("start Firecracker jailer: %w",err)}
@@ -294,21 +322,26 @@ func (r *LinuxRuntime) firecrackerState(m runtimeMeta)(string,error){
 }
 
 func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
-	var errs []error
-	if _,e:=os.Stat(filepath.Join(m.CgroupPath,"cgroup.kill"));e==nil{if e=os.WriteFile(filepath.Join(m.CgroupPath,"cgroup.kill"),[]byte("1"),0200);e!=nil{errs=append(errs,e)}}
-	deadline:=time.Now().Add(10*time.Second)
-	for time.Now().Before(deadline){b,e:=os.ReadFile(filepath.Join(m.CgroupPath,"cgroup.procs"));if e!=nil||len(bytes.TrimSpace(b))==0{break};time.Sleep(100*time.Millisecond)}
-	if b,e:=os.ReadFile(filepath.Join(m.CgroupPath,"cgroup.procs"));e==nil&&len(bytes.TrimSpace(b))>0{errs=append(errs,errors.New("Firecracker cgroup still contains processes"))}
+	cgroupProcs:=filepath.Join(m.CgroupPath,"cgroup.procs")
+	if _,e:=os.Stat(cgroupProcs);e==nil{
+		if _,e=os.Stat(filepath.Join(m.CgroupPath,"cgroup.kill"));e==nil{if e=os.WriteFile(filepath.Join(m.CgroupPath,"cgroup.kill"),[]byte("1"),0200);e!=nil{return fmt.Errorf("kill Firecracker cgroup: %w",e)}}else{
+			b,_:=os.ReadFile(cgroupProcs);for _,line:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(line);if pid>1{_ = syscall.Kill(pid,syscall.SIGKILL)}}
+		}
+		deadline:=time.Now().Add(15*time.Second)
+		for time.Now().Before(deadline){b,e:=os.ReadFile(cgroupProcs);if e!=nil||len(bytes.TrimSpace(b))==0{break};time.Sleep(100*time.Millisecond)}
+		b,e:=os.ReadFile(cgroupProcs);if e==nil&&len(bytes.TrimSpace(b))>0{return errors.New("Firecracker processes remain; refusing to detach their resources")}
+	}
 	_ = run(context.Background(),"/usr/sbin/nft","delete","table","inet",m.PolicyTable)
 	_ = run(context.Background(),"/usr/sbin/nft","delete","table","ip",m.NATTable)
-	_ = run(context.Background(),"/usr/sbin/ip","link","delete",m.Tap)
+	_ = run(context.Background(),"/usr/sbin/ip","link","delete",m.HostVeth)
+	if mounted,_:=isMountPoint(m.JailDir);mounted{if e:=run(context.Background(),"/usr/bin/umount",m.JailDir);e!=nil{return fmt.Errorf("unmount encrypted VM storage: %w",e)}}
+	if _,e:=os.Stat(filepath.Join("/dev/mapper",m.Mapper));e==nil{if e=run(context.Background(),"/usr/sbin/cryptsetup","close",m.Mapper);e!=nil{return fmt.Errorf("close encrypted VM storage: %w",e)}}
+	if _,e:=os.Stat(m.CgroupPath);e==nil{if e=os.Remove(m.CgroupPath);e!=nil{return fmt.Errorf("remove VM cgroup: %w",e)}}
 	_ = run(context.Background(),"/usr/bin/setfacl","-x","u:"+strconv.Itoa(m.UID),"/dev/kvm")
-	if mounted, _ := isMountPoint(m.JailDir); mounted {if e:=run(context.Background(),"/usr/bin/umount",m.JailDir);e!=nil{errs=append(errs,e)}}
-	_ = run(context.Background(),"/usr/sbin/cryptsetup","close",m.Mapper)
-	if _,e:=os.Stat(m.CgroupPath);e==nil{if e=os.Remove(m.CgroupPath);e!=nil{errs=append(errs,e)}}
-	if _,e:=os.Stat(m.JailDir);e==nil{if e=os.RemoveAll(m.JailDir);e!=nil{errs=append(errs,e)}}
-	if len(errs)>0{return errors.Join(errs...)}
+	_ = run(context.Background(),"/usr/sbin/ip","netns","delete",m.NetNS)
+	if _,e:=os.Stat(m.JailDir);e==nil{if e=os.RemoveAll(m.JailDir);e!=nil{return e}}
 	_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,m.ID))
+	delete(r.evidence,m.ID)
 	return nil
 }
 
