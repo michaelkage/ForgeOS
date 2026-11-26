@@ -25,7 +25,7 @@ Example shape (replace all paths, digests, addresses, and policy identifiers wit
       "workerId": "forgeos-host-01",
       "stateDir": "/var/lib/forgeos-host-agent",
       "chrootBase": "/srv/forgeos-jailer",
-      "cgroupParent": "forgeos-host-agent.slice/instances",
+      "cgroupParent": "forgeos-host.slice/forgeos-host-agent.service/instances",
       "jailerPath": "/usr/local/bin/jailer",
       "firecrackerPath": "/usr/local/bin/firecracker",
       "kernelPaths": {
@@ -82,3 +82,5 @@ Teardown first kills the VM cgroup. It refuses to detach network or disk resourc
 GitHub Actions runs gofmt, race-enabled tests, vet, and compilation. These checks do not prove that KVM, cgroup, nftables, LUKS, jailer, vsock, crash recovery, or guest image behavior works on the production kernel. Run the privileged-host integration suite and an independent security review before registering any host as trusted.
 
 Android builds must remain disabled until host enforcement, guest runtime, scheduler lifecycle, signing isolation, and production teardown have all been independently verified.
+
+Install the privileged systemd slice, host-agent service, and root-only environment file from [host-agent installation assets](host-agent/README.md). Install the guest-agent service into each immutable guest rootfs using [guest image instructions](guest-image/README.md).
