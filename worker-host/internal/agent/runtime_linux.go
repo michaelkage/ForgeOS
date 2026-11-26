@@ -149,7 +149,7 @@ func (r *LinuxRuntime) Provision(req ProvisionRequest,id string) error {
 
 func (r *LinuxRuntime) Evidence(id string)(IsolationProfile,error){
 	r.mu.Lock();defer r.mu.Unlock()
-	m,err:=r.readMeta(id);if err!=nil{return IsolationProfile{},errors.New("isolation evidence is unavailable")};if p,ok:=r.evidence[id];ok{return p,nil};return IsolationProfile{FirecrackerMicroVM:true,DedicatedKernel:true,Jailer:true,NonRootVMM:true,NoHostMounts:true,NoContainerSocket:true,NoHostPIDNamespace:true,EncryptedEphemeralDisk:true,HardCPULimit:true,HardMemoryLimit:true,HardDiskLimit:true,HardProcessLimit:true,WallTimeLimit:true,EgressFiltering:true,MetadataBlocked:true,DestroyAfterJob:true,EgressPolicyID:m.EgressPolicyID,Resources:m.Resources},nil
+	m,err:=r.readMeta(id);if err!=nil{return IsolationProfile{},errors.New("isolation evidence is unavailable")};if err:=verifyFirecrackerInCgroup(m);err!=nil{return IsolationProfile{},err};if err:=r.moveKvmPitThreads();err!=nil{return IsolationProfile{},err};if p,ok:=r.evidence[id];ok{return p,nil};return IsolationProfile{FirecrackerMicroVM:true,DedicatedKernel:true,Jailer:true,NonRootVMM:true,NoHostMounts:true,NoContainerSocket:true,NoHostPIDNamespace:true,EncryptedEphemeralDisk:true,HardCPULimit:true,HardMemoryLimit:true,HardDiskLimit:true,HardProcessLimit:true,WallTimeLimit:true,EgressFiltering:true,MetadataBlocked:true,DestroyAfterJob:true,EgressPolicyID:m.EgressPolicyID,Resources:m.Resources},nil
 }
 
 func (r *LinuxRuntime) Inspect(id string)(string,error){
@@ -178,8 +178,10 @@ func (r *LinuxRuntime) preflight()error{
 	var fs syscall.Statfs_t
 	if err:=syscall.Statfs("/sys/fs/cgroup",&fs);err!=nil{return err}
 	if uint64(fs.Type)!=0x63677270{return errors.New("cgroup v2 is required")}
+	if err:=verifyHostHardening();err!=nil{return err}
 	controllers,err:=os.ReadFile(filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent,"cgroup.controllers"));if err!=nil{return fmt.Errorf("cgroup parent is not delegated: %w",err)}
 	for _,c:=range []string{"cpu","memory","pids","io"}{if !strings.Contains(" "+string(controllers)+" "," "+c+" "){return fmt.Errorf("cgroup v2 controller %s is unavailable",c)}}
+	parentProcs,err:=os.ReadFile(filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent,"cgroup.procs"));if err!=nil{return err};if len(bytes.TrimSpace(parentProcs))!=0{return errors.New("delegated cgroup parent must be empty; run the host agent in a sibling cgroup")}
 	for _,p:=range []string{r.cfg.JailerPath,r.cfg.FirecrackerPath,"/usr/sbin/cryptsetup","/usr/sbin/mkfs.ext4","/usr/bin/mount","/usr/bin/umount","/usr/sbin/ip","/usr/sbin/nft","/usr/bin/setfacl","/usr/bin/getfacl"}{if _,err:=os.Stat(p);err!=nil{return fmt.Errorf("required host executable %s unavailable",p)}}
 	return nil
 }
@@ -216,7 +218,7 @@ func (r *LinuxRuntime) createCgroup(m runtimeMeta,res Resources)error{
 	if err:=os.WriteFile(filepath.Join(parent,"cgroup.subtree_control"),[]byte("+cpu +memory +pids +io"),0640);err!=nil{return fmt.Errorf("enable cgroup v2 controllers: %w",err)}
 	if err:=os.Mkdir(m.CgroupPath,0750);err!=nil{return err}
 	quota:=res.CPUCores*100000
-	values:=map[string]string{"memory.max":strconv.FormatInt(int64(res.MemoryMiB)*1024*1024,10),"memory.swap.max":"0","memory.oom.group":"1","pids.max":strconv.Itoa(res.ProcessLimit),"cpu.max":fmt.Sprintf("%d 100000",quota)}
+	values:=map[string]string{"memory.max":strconv.FormatInt(int64(res.MemoryMiB+512)*1024*1024,10),"memory.swap.max":"0","memory.oom.group":"1","pids.max":strconv.Itoa(res.ProcessLimit),"cpu.max":fmt.Sprintf("%d 100000",quota)}
 	st,e:=os.Stat(m.DiskPath);if e!=nil{return e};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok{return errors.New("cannot determine ephemeral disk backing device")}
 	dev:=uint64(sys.Dev);major:=(dev>>8)&0xfff | (dev>>32)&0xfffff000;minor:=dev&0xff | (dev>>12)&0xffffff00
 	values["io.max"]=fmt.Sprintf("%d:%d rbps=%d wbps=%d riops=1000 wiops=1000",major,minor,r.cfg.IOBytesPerSecond,r.cfg.IOBytesPerSecond)
@@ -270,16 +272,16 @@ func (r *LinuxRuntime) setupNetwork(m runtimeMeta,cidrs []string)error{
 	if err:=ns("addr","add",m.GatewayIP+"/30","dev",m.Tap);err!=nil{return err}
 	if err:=ns("link","set",m.Tap,"up");err!=nil{return err}
 	if err:=os.WriteFile("/proc/sys/net/ipv4/ip_forward",[]byte("1"),0644);err!=nil{return err}
-	allow:=make([]string,0,len(cidrs));for _,raw:=range cidrs{p,e:=netip.ParsePrefix(raw);if e:=validateEgressCIDR(raw);e!=nil{return e};allow=append(allow,raw)}
+	allow:=make([]string,0,len(cidrs));for _,raw:=range cidrs{if e:=validateEgressCIDR(raw);e!=nil{return e};allow=append(allow,raw)}
 	var host strings.Builder
-	host.WriteString("table inet "+m.PolicyTable+" { chain input { type filter hook input priority -300; policy accept; iifname \""+m.HostVeth+"\" drop; } chain forward { type filter hook forward priority -300; policy accept; iifname \""+m.HostVeth+"\" ct state established,related accept; ")
+	host.WriteString("table inet "+m.PolicyTable+" { chain input { type filter hook input priority -300; policy accept; iifname \""+m.HostVeth+"\" drop; } chain forward { type filter hook forward priority -300; policy accept; ")
 	for _,cidr:=range allow{host.WriteString("iifname \""+m.HostVeth+"\" ip daddr "+cidr+" tcp dport 443 accept; ")}
 	for _,ip:=range r.cfg.DNSResolvers{host.WriteString("iifname \""+m.HostVeth+"\" ip daddr "+ip+" udp dport 53 accept; iifname \""+m.HostVeth+"\" ip daddr "+ip+" tcp dport 53 accept; ")}
 	host.WriteString("iifname \""+m.HostVeth+"\" drop; oifname \""+m.HostVeth+"\" ct state established,related accept; } }\n")
 	host.WriteString("table ip "+m.NATTable+" { chain postrouting { type nat hook postrouting priority srcnat; policy accept; ip saddr "+m.NetworkCIDR+" masquerade; } }\n")
 	if err:=runInput(context.Background(),"/usr/sbin/nft",[]byte(host.String()),"-f","-");err!=nil{return err}
 	var inside strings.Builder
-	inside.WriteString("table inet forgeos_guest { chain input { type filter hook input priority -300; policy accept; iifname \""+m.Tap+"\" drop; } chain forward { type filter hook forward priority -300; policy drop; iifname \""+m.Tap+"\" ct state established,related accept; ")
+	inside.WriteString("table inet forgeos_guest { chain input { type filter hook input priority -300; policy accept; iifname \""+m.Tap+"\" drop; } chain forward { type filter hook forward priority -300; policy drop; ")
 	for _,cidr:=range allow{inside.WriteString("iifname \""+m.Tap+"\" oifname \""+m.GuestVeth+"\" ip daddr "+cidr+" tcp dport 443 accept; ")}
 	for _,ip:=range r.cfg.DNSResolvers{inside.WriteString("iifname \""+m.Tap+"\" oifname \""+m.GuestVeth+"\" ip daddr "+ip+" udp dport 53 accept; iifname \""+m.Tap+"\" oifname \""+m.GuestVeth+"\" ip daddr "+ip+" tcp dport 53 accept; ")}
 	inside.WriteString("iifname \""+m.Tap+"\" drop; oifname \""+m.Tap+"\" ct state established,related accept; } }\n")
@@ -294,7 +296,7 @@ func (r *LinuxRuntime) launchFirecracker(m runtimeMeta,req ProvisionRequest,kern
 	if err:=os.Chown(kernelTarget,m.UID,m.GID);err!=nil{return err}
 	if err:=run(context.Background(),"/usr/bin/setfacl","-m","u:"+strconv.Itoa(m.UID)+":rw","/dev/kvm");err!=nil{return err}
 	apiSocket:=filepath.Join(m.RootDir,"run/firecracker.socket")
-	args:=[]string{"--id",m.ID,"--exec-file",r.cfg.FirecrackerPath,"--uid",strconv.Itoa(m.UID),"--gid",strconv.Itoa(m.GID),"--chroot-base-dir",r.cfg.ChrootBase,"--cgroup-version","2","--parent-cgroup",filepath.Join(r.cfg.CgroupParent,m.ID),"--netns","/run/netns/"+m.NetNS,"--resource-limit","no-file=4096","--new-pid-ns","--","--api-sock","/run/firecracker.socket"}
+	args:=[]string{"--id",m.ID,"--exec-file",r.cfg.FirecrackerPath,"--uid",strconv.Itoa(m.UID),"--gid",strconv.Itoa(m.GID),"--chroot-base-dir",r.cfg.ChrootBase,"--cgroup-version","2","--parent-cgroup",filepath.Join(r.cfg.CgroupParent,m.ID),"--netns","/run/netns/"+m.NetNS,"--resource-limit","no-file=4096","--resource-limit","fsize="+strconv.FormatInt(int64(req.Resources.DiskGiB)*1024*1024*1024,10),"--new-pid-ns","--","--api-sock","/run/firecracker.socket"}
 	cmd:=exec.Command(r.cfg.JailerPath,args...)
 	cmd.Env=[]string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin","LANG=C","LC_ALL=C"}
 	cmd.Stdout=io.Discard;cmd.Stderr=io.Discard
@@ -303,7 +305,7 @@ func (r *LinuxRuntime) launchFirecracker(m runtimeMeta,req ProvisionRequest,kern
 	if err:=waitForSocket(apiSocket,10*time.Second);err!=nil{_ = cmd.Process.Kill();return err}
 	api:=newUnixAPI(apiSocket)
 	machine:=map[string]any{"vcpu_count":req.Resources.CPUCores,"mem_size_mib":req.Resources.MemoryMiB,"smt":false}
-	boot:=map[string]any{"kernel_image_path":"/boot/vmlinux","boot_args":fmt.Sprintf("console=ttyS0 reboot=k panic=1 ip=%s::%s:255.255.255.252::eth0:off",m.GuestIP,m.GatewayIP)}
+	boot:=map[string]any{"kernel_image_path":"/boot/vmlinux","boot_args":fmt.Sprintf("reboot=k panic=1 pci=off 8250.nr_uarts=0 loglevel=1 ip=%s::%s:255.255.255.252::eth0:off",m.GuestIP,m.GatewayIP)}
 	drive:=map[string]any{"drive_id":"rootfs","path_on_host":"/var/lib/forgeos/rootfs.ext4","is_root_device":true,"is_read_only":false}
 	network:=map[string]any{"iface_id":"eth0","guest_mac":guestMAC(m.ID),"host_dev_name":m.Tap}
 	vsock:=map[string]any{"guest_cid":3,"uds_path":"/run/forgeos-vsock.sock"}
@@ -348,6 +350,7 @@ func (r *LinuxRuntime) firecrackerState(m runtimeMeta)(string,error){
 }
 
 func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
+	if err:=killKvmPitThreadsForCgroup(m);err!=nil{return err}
 	cgroupProcs:=filepath.Join(m.CgroupPath,"cgroup.procs")
 	if _,e:=os.Stat(cgroupProcs);e==nil{
 		if _,e=os.Stat(filepath.Join(m.CgroupPath,"cgroup.kill"));e==nil{if e=os.WriteFile(filepath.Join(m.CgroupPath,"cgroup.kill"),[]byte("1"),0200);e!=nil{return fmt.Errorf("kill Firecracker cgroup: %w",e)}}else{
@@ -380,6 +383,33 @@ func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 	delete(r.evidence,m.ID)
 	return nil
 }
+func verifyHostHardening()error{
+	swaps,err:=os.ReadFile("/proc/swaps");if err!=nil{return err};if len(strings.Fields(string(swaps)))>5{return errors.New("host swap must be disabled before running untrusted microVMs")}
+	if b,err:=os.ReadFile("/sys/kernel/mm/ksm/run");err==nil&&strings.TrimSpace(string(b))!="0"{return errors.New("kernel same-page merging must be disabled")}
+	if b,err:=os.ReadFile("/sys/devices/system/cpu/smt/active");err==nil&&strings.TrimSpace(string(b))=="1"{return errors.New("simultaneous multithreading must be disabled for tenant isolation")}
+	return nil
+}
+func (r *LinuxRuntime) moveKvmPitThreads()error{
+	procs,err:=os.ReadDir("/proc");if err!=nil{return err}
+	owners:=map[int]string{}
+	entries,err:=os.ReadDir(r.cfg.StateDir);if err!=nil&&!os.IsNotExist(err){return err}
+	for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if e!=nil{continue};b,e:=os.ReadFile(filepath.Join(m.CgroupPath,"cgroup.procs"));if e!=nil{continue};for _,raw:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(raw);if pid>1{owners[pid]=m.CgroupPath}}}
+	for _,entry:=range procs{threadPID,e:=strconv.Atoi(entry.Name());if e!=nil{continue};comm,e:=os.ReadFile(filepath.Join("/proc",entry.Name(),"comm"));if e!=nil{continue};name:=strings.TrimSpace(string(comm));if !strings.HasPrefix(name,"kvm-pit/"){continue};targetPID,e:=strconv.Atoi(strings.TrimPrefix(name,"kvm-pit/"));if e!=nil{continue};path,ok:=owners[targetPID];if !ok{continue};group,e:=os.ReadFile(filepath.Join(path,"cgroup.procs"));if e!=nil{return e};found:=false;for _,raw:=range strings.Fields(string(group)){pid,_:=strconv.Atoi(raw);if pid==threadPID{found=true;break}};if found{continue};if e=os.WriteFile(filepath.Join(path,"cgroup.procs"),[]byte(strconv.Itoa(threadPID)),0644);e!=nil{if _,statErr:=os.Stat(filepath.Join("/proc",entry.Name()));os.IsNotExist(statErr){continue};return fmt.Errorf("move KVM PIT thread %d into VM cgroup: %w",threadPID,e)}}
+	return nil
+}
+func verifyFirecrackerInCgroup(m runtimeMeta)error{
+	b,err:=os.ReadFile(filepath.Join(m.CgroupPath,"cgroup.procs"));if err!=nil{return err}
+	for _,raw:=range strings.Fields(string(b)){pid,e:=strconv.Atoi(raw);if e!=nil{continue};comm,e:=os.ReadFile(filepath.Join("/proc",strconv.Itoa(pid),"comm"));if e==nil&&strings.Contains(strings.ToLower(string(comm)),"firecracker"){return nil}}
+	return errors.New("Firecracker VMM is not present in its enforced cgroup")
+}
+func killKvmPitThreadsForCgroup(m runtimeMeta)error{
+	b,err:=os.ReadFile(filepath.Join(m.CgroupPath,"cgroup.procs"));if err!=nil{if os.IsNotExist(err){return nil};return err}
+	targets:=map[int]bool{};for _,raw:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(raw);if pid>1{targets[pid]=true}}
+	entries,err:=os.ReadDir("/proc");if err!=nil{return err}
+	for _,entry:=range entries{threadPID,e:=strconv.Atoi(entry.Name());if e!=nil{continue};comm,e:=os.ReadFile(filepath.Join("/proc",entry.Name(),"comm"));if e!=nil{continue};name:=strings.TrimSpace(string(comm));if !strings.HasPrefix(name,"kvm-pit/"){continue};target,e:=strconv.Atoi(strings.TrimPrefix(name,"kvm-pit/"));if e!=nil||!targets[target]{continue};_ = syscall.Kill(threadPID,syscall.SIGKILL)}
+	return nil
+}
+
 func nftTableExists(family,table string)(bool,error){cmd:=exec.Command("/usr/sbin/nft","list","table",family,table);out,err:=cmd.CombinedOutput();if err==nil{return true,nil};if _,ok:=err.(*exec.ExitError);ok&&strings.Contains(string(out),"No such file or directory"){return false,nil};return false,fmt.Errorf("inspect nftables table %s/%s: %w: %s",family,table,err,strings.TrimSpace(string(out)))}
 func ipLinkExists(name string)(bool,error){cmd:=exec.Command("/usr/sbin/ip","link","show","dev",name);out,err:=cmd.CombinedOutput();if err==nil{return true,nil};if _,ok:=err.(*exec.ExitError);ok&&strings.Contains(string(out),"does not exist"){return false,nil};return false,fmt.Errorf("inspect interface %s: %w: %s",name,err,strings.TrimSpace(string(out)))}
 
