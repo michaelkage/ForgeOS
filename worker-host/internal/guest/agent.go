@@ -63,7 +63,7 @@ func VerifyEnvelope(raw []byte,publicKey ed25519.PublicKey,now time.Time)(Verifi
 	if !uuidRE.MatchString(p.JobID)||p.Attempt<1||p.Attempt>20||(p.Architecture!="x86_64"&&p.Architecture!="arm64")||!digestRE.MatchString(p.ImageDigest)||!credentialRE.MatchString(p.BootstrapCredential)||!uuidRE.MatchString(p.Nonce){return VerifiedBootstrap{},errors.New("bootstrap identity or credential is invalid")}
 	if p.Resources.CPUCores<2||p.Resources.CPUCores>128||p.Resources.MemoryMiB<4096||p.Resources.MemoryMiB>1048576||p.Resources.DiskGiB<100||p.Resources.DiskGiB>4096||p.Resources.ProcessLimit<128||p.Resources.ProcessLimit>65536||p.Resources.WallTimeSeconds<60||p.Resources.WallTimeSeconds>172800{return VerifiedBootstrap{},errors.New("bootstrap resource limits are invalid")}
 	if p.IssuedAt.IsZero()||p.ExpiresAt.IsZero()||p.IssuedAt.After(now.Add(30*time.Second))||now.Sub(p.IssuedAt)>time.Minute||!p.ExpiresAt.After(now)||p.ExpiresAt.After(now.Add(5*time.Minute))||!p.ExpiresAt.After(p.IssuedAt){return VerifiedBootstrap{},errors.New("bootstrap envelope is expired or outside its validity window")}
-	api,err:=url.Parse(p.APIBaseURL);if err!=nil||api.Scheme!="https"||api.Host==""||api.User!=nil||api.RawQuery!=""||api.Fragment!=""{return VerifiedBootstrap{},errors.New("bootstrap API endpoint must be credential-free HTTPS")}
+	api,err:=url.Parse(p.APIBaseURL);if err!=nil||api.Scheme!="https"||api.Host==""||api.User!=nil||(api.Path!=""&&api.Path!="/")||api.RawQuery!=""||api.Fragment!=""{return VerifiedBootstrap{},errors.New("bootstrap API endpoint must be credential-free HTTPS")}
 	return VerifiedBootstrap{Payload:p,API:api},nil
 }
 
