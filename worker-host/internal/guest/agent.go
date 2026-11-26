@@ -117,7 +117,7 @@ func Run(ctx context.Context,cfg Config)error{
 	workerCgroup,err:=setupGuestProcessCgroup(verified.Payload.Resources.ProcessLimit);if err!=nil{return err}
 	if err:=os.MkdirAll("/workspace",0700);err!=nil{return err}
 	mount:=exec.Command("mount","-t","ext4","-o","nodev,nosuid","/dev/vdb","/workspace");mount.Stdout=io.Discard;mount.Stderr=io.Discard
-	if err:=mount.Run();err!=nil{return errors.New("encrypted guest workspace disk could not be mounted")}
+	if err:=mount.Run();err!=nil{return errors.New("encrypted guest workspace disk could not be mounted")};if err:=os.Chown("/workspace",10000,10000);err!=nil{return err}
 	workspace:="/workspace/forgeos"
 	if err:=os.MkdirAll(workspace,0700);err!=nil{return err};if err:=os.Chown(workspace,10000,10000);err!=nil{return err}
 	artifactRel,relErr:=filepath.Rel(workspace,cfg.ArtifactPath);if relErr!=nil||artifactRel==".."||strings.HasPrefix(artifactRel,".."+string(os.PathSeparator)){return errors.New("artifact output must be stored inside the encrypted job workspace")}
