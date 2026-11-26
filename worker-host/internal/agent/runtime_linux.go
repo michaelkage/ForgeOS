@@ -310,8 +310,7 @@ func (r *LinuxRuntime) launchFirecracker(m runtimeMeta,req ProvisionRequest,kern
 func (r *LinuxRuntime) sendBootstrap(m runtimeMeta,req ProvisionRequest)error{
 	nonce,nonceErr:=randomUUID();if nonceErr!=nil{return nonceErr};issued:=time.Now().UTC();payload:=map[string]any{"schemaVersion":1,"jobId":req.JobID,"attempt":req.Attempt,"architecture":req.Architecture,"imageDigest":req.ImageDigest,"resources":req.Resources,"apiBaseUrl":r.cfg.BootstrapAPIBaseURL,"bootstrapCredential":req.BootstrapCredential,"nonce":nonce,"issuedAt":issued,"expiresAt":issued.Add(180*time.Second)}
 	// The guest verifies the Ed25519 signature using the pinned host key embedded in its immutable image.
-	signer,ok:=r.(interface{SignBootstrap(any)(string,error)});if !ok{return errors.New("host runtime bootstrap signer is unavailable")}
-	sig,err:=signer.SignBootstrap(payload);if err!=nil{return err}
+	sig,err:=r.SignBootstrap(payload);if err!=nil{return err}
 	envelope:=map[string]any{"payload":payload,"signature":sig}
 	data,err:=json.Marshal(envelope);if err!=nil{return err}
 	if len(data)>64*1024{return errors.New("bootstrap envelope too large")}
@@ -375,8 +374,8 @@ func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 	delete(r.evidence,m.ID)
 	return nil
 }
-func nftTableExists(family,table string)(bool,error){cmd:=exec.Command("/usr/sbin/nft","list","table",family,table);out,err:=cmd.CombinedOutput();if err==nil{return true,nil};if ee,ok:=err.(*exec.ExitError);ok&&strings.Contains(string(out),"No such file or directory"){return false,nil};return false,fmt.Errorf("inspect nftables table %s/%s: %w: %s",family,table,err,strings.TrimSpace(string(out)))}
-func ipLinkExists(name string)(bool,error){cmd:=exec.Command("/usr/sbin/ip","link","show","dev",name);out,err:=cmd.CombinedOutput();if err==nil{return true,nil};if ee,ok:=err.(*exec.ExitError);ok&&strings.Contains(string(out),"does not exist"){return false,nil};return false,fmt.Errorf("inspect interface %s: %w: %s",name,err,strings.TrimSpace(string(out)))}
+func nftTableExists(family,table string)(bool,error){cmd:=exec.Command("/usr/sbin/nft","list","table",family,table);out,err:=cmd.CombinedOutput();if err==nil{return true,nil};if _,ok:=err.(*exec.ExitError);ok&&strings.Contains(string(out),"No such file or directory"){return false,nil};return false,fmt.Errorf("inspect nftables table %s/%s: %w: %s",family,table,err,strings.TrimSpace(string(out)))}
+func ipLinkExists(name string)(bool,error){cmd:=exec.Command("/usr/sbin/ip","link","show","dev",name);out,err:=cmd.CombinedOutput();if err==nil{return true,nil};if _,ok:=err.(*exec.ExitError);ok&&strings.Contains(string(out),"does not exist"){return false,nil};return false,fmt.Errorf("inspect interface %s: %w: %s",name,err,strings.TrimSpace(string(out)))}
 
 func isMountPoint(path string)(bool,error){b,e:=os.ReadFile("/proc/self/mountinfo");if e!=nil{return false,e};clean:=filepath.Clean(path);for _,line:=range strings.Split(string(b),"\n"){f:=strings.Fields(line);if len(f)>4&&f[4]==clean{return true,nil}};return false,nil}
 func (r *LinuxRuntime) Recover()error{r.mu.Lock();defer r.mu.Unlock();entries,e:=os.ReadDir(r.cfg.StateDir);if os.IsNotExist(e){return nil};if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if os.IsNotExist(e){_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,entry.Name()));continue};if e!=nil{errs=append(errs,e);continue};if e=r.cleanup(m);e!=nil{errs=append(errs,e)}};if len(errs)>0{return errors.Join(errs...)};return nil}
