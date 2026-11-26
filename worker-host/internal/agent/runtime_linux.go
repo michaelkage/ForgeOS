@@ -101,7 +101,7 @@ func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
 	for _,raw:=range cfg.DNSResolvers { a,e:=netip.ParseAddr(raw);if e!=nil||!a.Is4()||!a.IsGlobalUnicast()||a.IsPrivate()||a.IsLinkLocalUnicast()||isForbiddenEgress(netip.PrefixFrom(a,32)){return nil,errors.New("DNS resolver must be a public unicast IPv4 address")} }
 	if len(cfg.DNSResolvers)==0{return nil,errors.New("at least one explicitly allowlisted public DNS resolver is required")}
 	if err:=os.MkdirAll(cfg.StateDir,0700);err!=nil{return nil,err};if err:=os.MkdirAll(cfg.ChrootBase,0700);err!=nil{return nil,err}
-	for _,p:=range []string{cfg.StateDir,cfg.ChrootBase}{st,e:=os.Lstat(p);if e!=nil{return nil,e};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok||sys.Uid!=0||st.Mode().Perm()&0022!=0{return nil,fmt.Errorf("runtime directory %s must be root-owned and not group/world writable",p)}}
+	for _,p:=range []string{cfg.StateDir,cfg.ChrootBase}{if e:=verifyRootPath(p);e!=nil{return nil,fmt.Errorf("unsafe runtime directory %s: %w",p,e)}}
 	return &LinuxRuntime{cfg:cfg,evidence:map[string]IsolationProfile{}},nil
 }
 
@@ -179,6 +179,7 @@ func (r *LinuxRuntime) preflight()error{
 	if err:=syscall.Statfs("/sys/fs/cgroup",&fs);err!=nil{return err}
 	if uint64(fs.Type)!=0x63677270{return errors.New("cgroup v2 is required")}
 	if err:=verifyHostHardening();err!=nil{return err}
+	if err:=verifyRootPath(filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent));err!=nil{return fmt.Errorf("unsafe delegated cgroup path: %w",err)}
 	controllers,err:=os.ReadFile(filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent,"cgroup.controllers"));if err!=nil{return fmt.Errorf("cgroup parent is not delegated: %w",err)}
 	for _,c:=range []string{"cpu","memory","pids","io"}{if !strings.Contains(" "+string(controllers)+" "," "+c+" "){return fmt.Errorf("cgroup v2 controller %s is unavailable",c)}}
 	parentProcs,err:=os.ReadFile(filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent,"cgroup.procs"));if err!=nil{return err};if len(bytes.TrimSpace(parentProcs))!=0{return errors.New("delegated cgroup parent must be empty; run the host agent in a sibling cgroup")}
@@ -186,8 +187,16 @@ func (r *LinuxRuntime) preflight()error{
 	return nil
 }
 
+func verifyRootPath(path string)error{
+	if !filepath.IsAbs(path){return errors.New("path must be absolute")}
+	clean:=filepath.Clean(path);current:=string(os.PathSeparator)
+	parts:=strings.Split(strings.TrimPrefix(clean,string(os.PathSeparator)),string(os.PathSeparator))
+	for _,part:=range parts{if part==""{continue};current=filepath.Join(current,part);st,err:=os.Lstat(current);if err!=nil{return err};if st.Mode()&os.ModeSymlink!=0||!st.IsDir(){return fmt.Errorf("%s is not a real directory",current)};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok||sys.Uid!=0{return fmt.Errorf("%s is not owned by root",current)};if st.Mode().Perm()&0022!=0{return fmt.Errorf("%s is writable by group or others",current)}}
+	return nil
+}
+
 func regularRootOwned(path string)error{
-	st,err:=os.Lstat(path);if err!=nil{return err};if !st.Mode().IsRegular()||st.Mode()&os.ModeSymlink!=0{return errors.New("must be a regular non-symlink file")}
+	if err:=verifyRootPath(filepath.Dir(path));err!=nil{return err};st,err:=os.Lstat(path);if err!=nil{return err};if !st.Mode().IsRegular()||st.Mode()&os.ModeSymlink!=0{return errors.New("must be a regular non-symlink file")}
 	if sys,ok:=st.Sys().(*syscall.Stat_t);!ok||sys.Uid!=0{return errors.New("must be owned by root")}
 	if st.Mode().Perm()&0022!=0{return errors.New("must not be group/world writable")}
 	return nil
