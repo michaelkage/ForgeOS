@@ -24,3 +24,25 @@ The guest service must not restart after its one job. The VM is disposable: afte
 ## Build worker release gate
 
 The `forgeos-build-worker` executable is a separately versioned guest artifact and is not produced by the host-agent package. Do not enable the scheduler or Android builds until an audited build-worker release is built, pinned by digest, and installed in the immutable guest image. The guest agent will fail closed if the worker executable is missing or not root-owned and immutable.
+
+## Build-worker release 0.1
+
+The host build pipeline now contains `cmd/forgeos-build-worker`. Build it for the guest architecture with CGO disabled and install the resulting executable as `/usr/local/bin/forgeos-build-worker` in the immutable guest rootfs. The guest agent passes the canonical snapshot digest and the signed VM wall-time budget to the worker. The worker independently verifies the digest before any network or filesystem build operation.
+
+This first release deliberately supports only:
+- LineageOS and crDroid manifest repositories.
+- Explicit manifest revisions, falling back to the device's pinned manifest branch only when the configuration revision is unset.
+- Configurations with root method `none`, no GApps, no microG, no debloat packages, and no enabled feature flags.
+- A single userdebug ROM build using the fixed `lunch lineage_<codename>-userdebug && mka bacon` build sequence.
+- A flashable ZIP containing an Android OTA payload or recovery updater.
+
+The worker replaces the selected manifest with the exact manifest bytes embedded in the immutable job snapshot, generates local repo manifest overrides pinning every verified source project to its full commit SHA, runs `repo sync`, and builds entirely inside the encrypted per-job workspace. It rejects missing pinned projects rather than silently using a floating branch. Unsupported configuration features fail closed; they are not silently ignored.
+
+The worker is not yet a general Android build service. Root methods (Magisk, KernelSU, APatch), GApps/microG, debloating, feature flags, module overlays, multiple build targets, and release signing require separately reviewed implementations. The output ZIP is an unsigned build artifact until it has passed the independent signing service and artifact verification stages.
+
+Build and test from `worker-host`:
+```sh
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/forgeos-build-worker ./cmd/forgeos-build-worker
+go test -race ./...
+```
+Build an arm64 guest binary with `GOARCH=arm64`. Record the SHA-256 digest of the executable and immutable rootfs image in the worker image release record. Do not enable the scheduler based solely on a successful build; a privileged-host end-to-end test and signing gate remain mandatory.

@@ -129,7 +129,7 @@ func Run(ctx context.Context,cfg Config)error{
 	heartbeatDone:=make(chan error,1)
 	go heartbeatLoop(runCtx,verified.API,job,cancel,heartbeatDone)
 	self,err:=os.Executable();if err!=nil{return err}
-	cmdArgs:=[]string{"--worker-child",workerCgroup,cfg.WorkerPath,"--snapshot",snapshotPath,"--artifact",cfg.ArtifactPath}
+	cmdArgs:=[]string{"--worker-child",workerCgroup,cfg.WorkerPath,"--snapshot",snapshotPath,"--snapshot-sha256",job.SnapshotSHA256,"--artifact",cfg.ArtifactPath,"--timeout-seconds",strconv.Itoa(verified.Payload.Resources.WallTimeSeconds)}
 	cmd:=exec.CommandContext(runCtx,self,cmdArgs...)
 	cmd.Dir=workspace
 	cmd.Env=[]string{"PATH=/usr/local/bin:/usr/bin:/bin","HOME="+workspace,"TMPDIR=/tmp","FORGEOS_JOB_ID="+job.JobID,"FORGEOS_JOB_ATTEMPT="+strconv.Itoa(job.Attempt)}
@@ -258,7 +258,7 @@ func postJSON(ctx context.Context,api *url.URL,path,token string,body any,out an
 func canonicalRaw(raw json.RawMessage)([]byte,error){var v any;d:=json.NewDecoder(bytes.NewReader(raw));d.UseNumber();if err:=d.Decode(&v);err!=nil{return nil,err};return canonicalValue(v)}
 func newHTTPClient()*http.Client{return &http.Client{Timeout:30*time.Second,CheckRedirect:func(*http.Request,[]*http.Request)error{return errors.New("redirects are not allowed")}}}
 func workerIDValid(s string)bool{return len(s)>=3&&len(s)<=64&&regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`).MatchString(s)}
-func trustedExecutable(path string)error{st,err:=os.Lstat(path);if err!=nil{return err};sys,ok:=st.Sys().(*syscall.Stat_t);if !st.Mode().IsRegular()||st.Mode()&os.ModeSymlink!=0||st.Mode().Perm()&0022!=0||!ok||sys.Uid!=0{return errors.New("build worker executable must be a root-owned, non-writable regular file")};return nil}
+func trustedExecutable(path string)error{st,err:=os.Lstat(path);if err!=nil{return err};sys,ok:=st.Sys().(*syscall.Stat_t);if !st.Mode().IsRegular()||st.Mode()&os.ModeSymlink!=0||st.Mode().Perm()&0022!=0||st.Mode().Perm()&0111==0||!ok||sys.Uid!=0{return errors.New("build worker executable must be a root-owned, non-writable regular file")};return nil}
 func readEd25519PublicKey(path string)(ed25519.PublicKey,error){
 	b,err:=os.ReadFile(path);if err!=nil{return nil,err}
 	st,statErr:=os.Lstat(path);if statErr!=nil{return nil,statErr};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok||sys.Uid!=0||st.Mode()&0022!=0||st.Mode()&os.ModeSymlink!=0{return nil,errors.New("host public key must be root-owned and not writable by group or others")};block,_:=pem.Decode(b);if block==nil{return nil,errors.New("host public key PEM is invalid")}
