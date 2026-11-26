@@ -11,6 +11,7 @@ export interface GuestBootstrapPayload {
   nonce: string;
   issuedAt: string;
   expiresAt: string;
+  resources: { cpuCores: number; memoryMiB: number; diskGiB: number; processLimit: number; wallTimeSeconds: number };
 }
 
 export interface GuestBootstrapEnvelope {
@@ -27,6 +28,7 @@ export interface VerifiedGuestBootstrap {
   bootstrapCredential: string;
   nonce: string;
   expiresAt: number;
+  resources: GuestBootstrapPayload["resources"];
 }
 
 function canonicalJson(value: unknown): string {
@@ -75,7 +77,12 @@ export function verifyGuestBootstrap(
   if (payload.schemaVersion !== 1 || !validUuid(payload.jobId) ||
       !Number.isSafeInteger(payload.attempt) || payload.attempt < 1 || payload.attempt > 20 ||
       (payload.architecture !== "x86_64" && payload.architecture !== "arm64") ||
-      !/^sha256:[a-f0-9]{64}$/.test(payload.imageDigest)) {
+      !/^sha256:[a-f0-9]{64}$/.test(payload.imageDigest) || !isRecord(payload.resources) ||
+      !Number.isSafeInteger(payload.resources.cpuCores) || payload.resources.cpuCores < 2 || payload.resources.cpuCores > 128 ||
+      !Number.isSafeInteger(payload.resources.memoryMiB) || payload.resources.memoryMiB < 4096 || payload.resources.memoryMiB > 1048576 ||
+      !Number.isSafeInteger(payload.resources.diskGiB) || payload.resources.diskGiB < 100 || payload.resources.diskGiB > 4096 ||
+      !Number.isSafeInteger(payload.resources.processLimit) || payload.resources.processLimit < 128 || payload.resources.processLimit > 65536 ||
+      !Number.isSafeInteger(payload.resources.wallTimeSeconds) || payload.resources.wallTimeSeconds < 60 || payload.resources.wallTimeSeconds > 172800) {
     throw new TypeError("Guest bootstrap identity or schema is invalid");
   }
   if (payload.jobId !== expected.jobId || payload.attempt !== expected.attempt ||
@@ -112,6 +119,7 @@ export function verifyGuestBootstrap(
     apiBaseUrl,
     bootstrapCredential: payload.bootstrapCredential,
     nonce: payload.nonce,
-    expiresAt
+    expiresAt,
+    resources: payload.resources
   };
 }
