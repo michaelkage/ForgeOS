@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"net/url"
 	"net/netip"
+	"os/user"
+	"regexp"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,6 +84,93 @@ type runtimeMeta struct {
 func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
 	if cfg.StateDir==""||cfg.ChrootBase==""||cfg.CgroupParent==""||cfg.JailerPath==""||cfg.FirecrackerPath=="" { return nil,errors.New("Linux runtime paths are required") }
 	if !filepath.IsAbs(cfg.StateDir)||!filepath.IsAbs(cfg.ChrootBase) { return nil,errors.New("runtime directories must be absolute") }
+	if !regexp.MustCompile(`^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*//go:build linux
+
+package agent
+
+import (
+	"bytes"
+	"crypto/rand"
+	"crypto/ed25519"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"net/netip"
+	"os/user"
+	"regexp"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+type LinuxConfig struct {
+	StateDir string `json:"stateDir"`
+	ChrootBase string `json:"chrootBase"`
+	CgroupParent string `json:"cgroupParent"`
+	JailerPath string `json:"jailerPath"`
+	FirecrackerPath string `json:"firecrackerPath"`
+	KernelPaths map[string]string `json:"kernelPaths"`
+	ImagePaths map[string]string `json:"imagePaths"`
+	EgressPolicies map[string][]string `json:"egressPolicies"`
+	DNSResolvers []string `json:"dnsResolvers"`
+	VMMUIDBase int `json:"vmmUidBase"`
+	VMMGIDBase int `json:"vmmGidBase"`
+	IOBytesPerSecond int64 `json:"ioBytesPerSecond"`
+	VsockPort uint32 `json:"vsockPort"`
+	BootstrapAPIBaseURL string `json:"bootstrapApiBaseUrl"`
+	SigningKey ed25519.PrivateKey `json:"-"`
+}
+
+type LinuxRuntime struct {
+	cfg LinuxConfig
+	mu sync.Mutex
+	evidence map[string]IsolationProfile
+}
+
+type runtimeMeta struct {
+	Resources Resources `json:"resources"`
+	EgressPolicyID string `json:"egressPolicyId"`
+	ID string `json:"id"`
+	CreatedAt time.Time `json:"createdAt"`
+	Deadline time.Time `json:"deadline"`
+	UID int `json:"uid"`
+	GID int `json:"gid"`
+	Tap string `json:"tap"`
+	GuestIP string `json:"guestIp"`
+	GatewayIP string `json:"gatewayIp"`
+	NetworkCIDR string `json:"networkCidr"`
+	NetNS string `json:"netns"`
+	HostVeth string `json:"hostVeth"`
+	GuestVeth string `json:"guestVeth"`
+	HostVethIP string `json:"hostVethIp"`
+	GuestVethIP string `json:"guestVethIp"`
+	Mapper string `json:"mapper"`
+	PolicyTable string `json:"policyTable"`
+	NATTable string `json:"natTable"`
+	CgroupPath string `json:"cgroupPath"`
+	JailDir string `json:"jailDir"`
+	RootDir string `json:"rootDir"`
+	DiskPath string `json:"diskPath"`
+	Mounted bool `json:"mounted"`
+	Opened bool `json:"opened"`
+}
+
+func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
+	if cfg.StateDir==""||cfg.ChrootBase==""||cfg.CgroupParent==""||cfg.JailerPath==""||cfg.FirecrackerPath=="" { return nil,errors.New("Linux runtime paths are required") }
+	).MatchString(cfg.CgroupParent)||strings.Contains(cfg.CgroupParent,".."){return nil,errors.New("cgroup parent must be a safe relative path")}
+	if cfg.VMMUIDBase+2000>60000||cfg.VMMGIDBase+2000>60000{return nil,errors.New("VMM identity pool exceeds the reserved system range")}
 	if cfg.VMMUIDBase<10000||cfg.VMMGIDBase<10000||cfg.IOBytesPerSecond<1_048_576 { return nil,errors.New("VMM identities and disk I/O limit are unsafe") }
 	if cfg.VsockPort==0 { cfg.VsockPort=4050 }
 	if cfg.BootstrapAPIBaseURL=="" { return nil,errors.New("bootstrap API base URL is required") }; apiURL,apiErr:=url.Parse(cfg.BootstrapAPIBaseURL); if apiErr!=nil||apiURL.Scheme!="https:"||apiURL.Host==""||apiURL.User!=nil||apiURL.RawQuery!=""||apiURL.Fragment!="" { return nil,errors.New("bootstrap API base URL must be a credential-free HTTPS origin") }; if len(cfg.SigningKey)!=ed25519.PrivateKeySize{return nil,errors.New("Ed25519 signing key is required")}
@@ -89,9 +178,9 @@ func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
 	for digest,path:=range cfg.ImagePaths { if !digestPattern.MatchString(digest)||!filepath.IsAbs(path){return nil,errors.New("invalid image digest mapping")} }
 	for id,cidrs:=range cfg.EgressPolicies {
 		if !workerPattern.MatchString(id)||len(cidrs)==0 {return nil,errors.New("egress policies must have a stable ID and non-empty CIDR allowlist")}
-		for _,raw:=range cidrs { p,e:=netip.ParsePrefix(raw);if e!=nil||isForbiddenEgress(p){return nil,fmt.Errorf("egress policy %s contains an invalid or private destination",id)} }
+		for _,raw:=range cidrs { p,e:=netip.ParsePrefix(raw);if e!=nil||!p.Addr().Is4()||isForbiddenEgress(p){return nil,fmt.Errorf("egress policy %s contains an invalid, non-IPv4, or private destination",id)} }
 	}
-	for _,raw:=range cfg.DNSResolvers { a,e:=netip.ParseAddr(raw);if e!=nil||!a.IsGlobalUnicast()||a.IsPrivate()||a.IsLinkLocalUnicast(){return nil,errors.New("DNS resolver must be a public unicast IP")} }
+	for _,raw:=range cfg.DNSResolvers { a,e:=netip.ParseAddr(raw);if e!=nil||!a.Is4()||!a.IsGlobalUnicast()||a.IsPrivate()||a.IsLinkLocalUnicast()||isForbiddenEgress(netip.PrefixFrom(a,32)){return nil,errors.New("DNS resolver must be a public unicast IPv4 address")} }
 	if len(cfg.DNSResolvers)==0{return nil,errors.New("at least one explicitly allowlisted public DNS resolver is required")}
 	return &LinuxRuntime{cfg:cfg,evidence:map[string]IsolationProfile{}},nil
 }
@@ -111,6 +200,7 @@ func (r *LinuxRuntime) Provision(req ProvisionRequest,id string) error {
 	if err:=regularRootOwned(r.cfg.FirecrackerPath);err!=nil{return fmt.Errorf("Firecracker binary rejected: %w",err)}
 	kernel:=r.cfg.KernelPaths[req.Architecture];baseImage:=r.cfg.ImagePaths[req.ImageDigest];cidrs,ok:=r.cfg.EgressPolicies[req.EgressPolicyID]
 	if kernel==""||baseImage==""||!ok{return errors.New("architecture, immutable image digest, or egress policy is not allowlisted")}
+	if err:=verifyImageDigest(baseImage,req.ImageDigest);err!=nil{return err}
 	if err:=regularRootOwned(kernel);err!=nil{return fmt.Errorf("kernel image rejected: %w",err)}
 	if err:=regularRootOwned(baseImage);err!=nil{return fmt.Errorf("root filesystem image rejected: %w",err)}
 	meta,err:=r.makeMeta(req,id);if err!=nil{return err}
@@ -143,10 +233,10 @@ func (r *LinuxRuntime) Inspect(id string)(string,error){
 	meta,err:=r.readMeta(id);if err!=nil { if os.IsNotExist(err){return "stopped",nil};return "unknown",err }
 	if time.Now().After(meta.Deadline){if err:=r.cleanup(meta);err!=nil{return "unknown",err};return "stopped",nil}
 	procs,err:=os.ReadFile(filepath.Join(meta.CgroupPath,"cgroup.procs"));if err!=nil{return "unknown",err}
-	if len(bytes.TrimSpace(procs))==0{return "stopped",nil}
+	if len(bytes.TrimSpace(procs))==0{if err:=r.cleanup(meta);err!=nil{return "unknown",err};return "stopped",nil}
 	state,err:=r.firecrackerState(meta);if err!=nil{return "unknown",nil}
 	if state=="Running"{return "running",nil}
-	return "unknown",nil
+	if err:=r.cleanup(meta);err!=nil{return "unknown",err};return "stopped",nil
 }
 
 func (r *LinuxRuntime) Terminate(id string)error{
@@ -160,12 +250,13 @@ func (r *LinuxRuntime) Terminate(id string)error{
 func (r *LinuxRuntime) preflight()error{
 	if os.Geteuid()!=0{return errors.New("host agent must run as root")}
 	if _,err:=os.Stat("/dev/kvm");err!=nil{return errors.New("KVM device is unavailable")}
+	for _,p:=range []string{r.cfg.StateDir,r.cfg.ChrootBase}{if err:=os.MkdirAll(p,0700);err!=nil{return err};st,e:=os.Lstat(p);if e!=nil{return e};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok||sys.Uid!=0||st.Mode().Perm()&0022!=0{return fmt.Errorf("runtime directory %s must be root-owned and not group/world writable",p)}}
 	var fs syscall.Statfs_t
 	if err:=syscall.Statfs("/sys/fs/cgroup",&fs);err!=nil{return err}
 	if uint64(fs.Type)!=0x63677270{return errors.New("cgroup v2 is required")}
-	controllers,err:=os.ReadFile("/sys/fs/cgroup/cgroup.controllers");if err!=nil{return err}
+	controllers,err:=os.ReadFile(filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent,"cgroup.controllers"));if err!=nil{return fmt.Errorf("cgroup parent is not delegated: %w",err)}
 	for _,c:=range []string{"cpu","memory","pids","io"}{if !strings.Contains(" "+string(controllers)+" "," "+c+" "){return fmt.Errorf("cgroup v2 controller %s is unavailable",c)}}
-	for _,p:=range []string{r.cfg.JailerPath,r.cfg.FirecrackerPath,"/usr/sbin/cryptsetup","/usr/sbin/mkfs.ext4","/usr/bin/mount","/usr/bin/umount","/usr/sbin/ip","/usr/sbin/nft","/usr/bin/setfacl","/usr/sbin/sysctl"}{if _,err:=os.Stat(p);err!=nil{return fmt.Errorf("required host executable %s unavailable",p)}}
+	for _,p:=range []string{r.cfg.JailerPath,r.cfg.FirecrackerPath,"/usr/sbin/cryptsetup","/usr/sbin/mkfs.ext4","/usr/bin/mount","/usr/bin/umount","/usr/sbin/ip","/usr/sbin/nft","/usr/bin/setfacl"}{if _,err:=os.Stat(p);err!=nil{return fmt.Errorf("required host executable %s unavailable",p)}}
 	return nil
 }
 
@@ -212,7 +303,7 @@ func (r *LinuxRuntime) createCgroup(m runtimeMeta,res Resources)error{
 func (r *LinuxRuntime) createEncryptedDisk(m runtimeMeta,diskGiB int,baseImage string)error{
 	f,err:=os.OpenFile(m.DiskPath,os.O_CREATE|os.O_EXCL|os.O_RDWR,0600);if err!=nil{return err}
 	if err=f.Truncate(int64(diskGiB)*1024*1024*1024);err!=nil{_ = f.Close();return err};_ = f.Close()
-	key:=make([]byte,64);if _,err:=rand.Read(key);err!=nil{return err}
+	key:=make([]byte,64);if _,err:=rand.Read(key);err!=nil{return err};defer func(){for i:=range key{key[i]=0}}()
 	if err:=runInput(context.Background(),"/usr/sbin/cryptsetup",key,"luksFormat","--batch-mode","--type","luks2","--key-file","-",m.DiskPath);err!=nil{return fmt.Errorf("encrypt ephemeral disk: %w",err)}
 	if err:=runInput(context.Background(),"/usr/sbin/cryptsetup",key,"open","--key-file","-",m.DiskPath,m.Mapper);err!=nil{return err}
 	m.Opened=true
@@ -331,23 +422,31 @@ func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 		for time.Now().Before(deadline){b,e:=os.ReadFile(cgroupProcs);if e!=nil||len(bytes.TrimSpace(b))==0{break};time.Sleep(100*time.Millisecond)}
 		b,e:=os.ReadFile(cgroupProcs);if e==nil&&len(bytes.TrimSpace(b))>0{return errors.New("Firecracker processes remain; refusing to detach their resources")}
 	}
-	_ = run(context.Background(),"/usr/sbin/nft","delete","table","inet",m.PolicyTable)
-	_ = run(context.Background(),"/usr/sbin/nft","delete","table","ip",m.NATTable)
-	_ = run(context.Background(),"/usr/sbin/ip","link","delete",m.HostVeth)
+	if exists,e:=nftTableExists("inet",m.PolicyTable);e!=nil{return e}else if exists{if e=run(context.Background(),"/usr/sbin/nft","delete","table","inet",m.PolicyTable);e!=nil{return fmt.Errorf("remove VM egress filter: %w",e)}}
+	if exists,e:=nftTableExists("ip",m.NATTable);e!=nil{return e}else if exists{if e=run(context.Background(),"/usr/sbin/nft","delete","table","ip",m.NATTable);e!=nil{return fmt.Errorf("remove VM NAT rules: %w",e)}}
+	if exists,_:=ipLinkExists(m.HostVeth);exists{if e:=run(context.Background(),"/usr/sbin/ip","link","delete",m.HostVeth);e!=nil{return fmt.Errorf("remove VM host veth: %w",e)}}
 	if mounted,_:=isMountPoint(m.JailDir);mounted{if e:=run(context.Background(),"/usr/bin/umount",m.JailDir);e!=nil{return fmt.Errorf("unmount encrypted VM storage: %w",e)}}
 	if _,e:=os.Stat(filepath.Join("/dev/mapper",m.Mapper));e==nil{if e=run(context.Background(),"/usr/sbin/cryptsetup","close",m.Mapper);e!=nil{return fmt.Errorf("close encrypted VM storage: %w",e)}}
 	if _,e:=os.Stat(m.CgroupPath);e==nil{if e=os.Remove(m.CgroupPath);e!=nil{return fmt.Errorf("remove VM cgroup: %w",e)}}
 	_ = run(context.Background(),"/usr/bin/setfacl","-x","u:"+strconv.Itoa(m.UID),"/dev/kvm")
-	_ = run(context.Background(),"/usr/sbin/ip","netns","delete",m.NetNS)
+	if _,e:=os.Stat(filepath.Join("/run/netns",m.NetNS));e==nil{if e=run(context.Background(),"/usr/sbin/ip","netns","delete",m.NetNS);e!=nil{return fmt.Errorf("remove VM network namespace: %w",e)}}
+	if mounted,_:=isMountPoint(m.JailDir);mounted{return errors.New("encrypted VM storage remains mounted after teardown")}
+	if _,e:=os.Stat(filepath.Join("/dev/mapper",m.Mapper));e==nil{return errors.New("encrypted VM mapping remains after teardown")}
+	if _,e:=os.Stat(m.CgroupPath);e==nil{return errors.New("VM cgroup remains after teardown")}
+	if exists,_:=ipLinkExists(m.HostVeth);exists{return errors.New("VM host network interface remains after teardown")}
+	if _,e:=os.Stat(filepath.Join("/run/netns",m.NetNS));e==nil{return errors.New("VM network namespace remains after teardown")}
 	if _,e:=os.Stat(m.JailDir);e==nil{if e=os.RemoveAll(m.JailDir);e!=nil{return e}}
 	_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,m.ID))
 	delete(r.evidence,m.ID)
 	return nil
 }
+func nftTableExists(family,table string)(bool,error){cmd:=exec.Command("/usr/sbin/nft","list","table",family,table);err:=cmd.Run();if err==nil{return true,nil};if _,ok:=err.(*exec.ExitError);ok{return false,nil};return false,err}
+func ipLinkExists(name string)(bool,error){cmd:=exec.Command("/usr/sbin/ip","link","show","dev",name);err:=cmd.Run();if err==nil{return true,nil};if _,ok:=err.(*exec.ExitError);ok{return false,nil};return false,err}
 
 func isMountPoint(path string)(bool,error){b,e:=os.ReadFile("/proc/self/mountinfo");if e!=nil{return false,e};clean:=filepath.Clean(path);for _,line:=range strings.Split(string(b),"\n"){f:=strings.Fields(line);if len(f)>4&&f[4]==clean{return true,nil}};return false,nil}
 func (r *LinuxRuntime) Recover()error{entries,e:=os.ReadDir(r.cfg.StateDir);if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if e!=nil{errs=append(errs,e);continue};if e=r.cleanup(m);e!=nil{errs=append(errs,e)}};if len(errs)>0{return errors.Join(errs...)};return nil}
 func (r *LinuxRuntime) SweepExpired()error{entries,e:=os.ReadDir(r.cfg.StateDir);if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if e!=nil{errs=append(errs,e);continue};if time.Now().After(m.Deadline){if e=r.cleanup(m);e!=nil{errs=append(errs,e)}}};if len(errs)>0{return errors.Join(errs...)};return nil}
+func verifyImageDigest(path,digest string)error{f,e:=os.Open(path);if e!=nil{return e};defer f.Close();h:=sha256.New();if _,e=io.Copy(h,f);e!=nil{return e};if "sha256:"+hex.EncodeToString(h.Sum(nil))!=digest{return errors.New("worker image bytes do not match the requested immutable SHA-256 digest")};return nil}
 func (r *LinuxRuntime) writeMeta(m runtimeMeta)error{b,e:=json.Marshal(m);if e!=nil{return e};tmp:=filepath.Join(r.cfg.StateDir,m.ID,"runtime.json.tmp");if e=os.WriteFile(tmp,b,0600);e!=nil{return e};return os.Rename(tmp,filepath.Join(r.cfg.StateDir,m.ID,"runtime.json"))}
 func (r *LinuxRuntime) readMeta(id string)(runtimeMeta,error){if !instancePattern.MatchString(id){return runtimeMeta{},errors.New("invalid instance ID")};b,e:=os.ReadFile(filepath.Join(r.cfg.StateDir,id,"runtime.json"));if e!=nil{return runtimeMeta{},e};var m runtimeMeta;e=json.Unmarshal(b,&m);return m,e}
 
