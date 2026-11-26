@@ -155,7 +155,7 @@ func (r *LinuxRuntime) Provision(req ProvisionRequest,id string) error {
 
 func (r *LinuxRuntime) Evidence(id string)(IsolationProfile,error){
 	r.mu.Lock();defer r.mu.Unlock()
-	m,err:=r.readMeta(id);if err!=nil||m.Phase!="running"{return IsolationProfile{},errors.New("isolation evidence is unavailable")};if err:=verifyHostHardening();err!=nil{return IsolationProfile{},err};if err:=r.verifyFirecrackerInCgroup(m);err!=nil{return IsolationProfile{},err};if err:=r.verifyCgroupLimits(m);err!=nil{return IsolationProfile{},err};if err:=r.verifyNetworkIsolation(m);err!=nil{return IsolationProfile{},err};if err:=r.moveKvmPitThreads();err!=nil{return IsolationProfile{},err};r.verifiedAt[id]=time.Now();if p,ok:=r.evidence[id];ok{return p,nil};return IsolationProfile{FirecrackerMicroVM:true,DedicatedKernel:true,Jailer:true,NonRootVMM:true,NoHostMounts:true,NoContainerSocket:true,NoHostPIDNamespace:true,EncryptedEphemeralDisk:true,HardCPULimit:true,HardMemoryLimit:true,HardDiskLimit:true,HardProcessLimit:true,WallTimeLimit:true,EgressFiltering:true,MetadataBlocked:true,DestroyAfterJob:true,EgressPolicyID:m.EgressPolicyID,Resources:m.Resources},nil
+	m,err:=r.readMeta(id);if err!=nil||m.Phase!="running"{return IsolationProfile{},errors.New("isolation evidence is unavailable")};if err:=verifyHostHardening();err!=nil{return IsolationProfile{},err};if err:=verifyNetworkPools();err!=nil{return IsolationProfile{},err};if err:=r.verifyFirecrackerInCgroup(m);err!=nil{return IsolationProfile{},err};if err:=r.verifyCgroupLimits(m);err!=nil{return IsolationProfile{},err};if err:=r.verifyNetworkIsolation(m);err!=nil{return IsolationProfile{},err};if err:=r.moveKvmPitThreads();err!=nil{return IsolationProfile{},err};r.verifiedAt[id]=time.Now();if p,ok:=r.evidence[id];ok{return p,nil};return IsolationProfile{FirecrackerMicroVM:true,DedicatedKernel:true,Jailer:true,NonRootVMM:true,NoHostMounts:true,NoContainerSocket:true,NoHostPIDNamespace:true,EncryptedEphemeralDisk:true,HardCPULimit:true,HardMemoryLimit:true,HardDiskLimit:true,HardProcessLimit:true,WallTimeLimit:true,EgressFiltering:true,MetadataBlocked:true,DestroyAfterJob:true,EgressPolicyID:m.EgressPolicyID,Resources:m.Resources},nil
 }
 
 func (r *LinuxRuntime) Inspect(id string)(string,error){
@@ -553,6 +553,7 @@ func (r *LinuxRuntime) SweepExpired()error{
 	hasVM:=false;for _,entry:=range entries{if entry.IsDir()&&instancePattern.MatchString(entry.Name()){hasVM=true;break}}
 	if !hasVM{return nil}
 	if err:=verifyHostHardening();err!=nil{return r.terminateAllForHostDrift(err)}
+	if err:=verifyNetworkPools();err!=nil{return r.terminateAllForHostDrift(err)}
 	if err:=r.moveKvmPitThreads();err!=nil{return r.terminateAllForHostDrift(err)}
 	var errs []error
 	for _,entry:=range entries{
