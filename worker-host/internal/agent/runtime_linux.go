@@ -187,11 +187,43 @@ func (r *LinuxRuntime) preflight()error{
 	if uint64(fs.Type)!=0x63677270{return errors.New("cgroup v2 is required")}
 	if err:=verifyHostHardening();err!=nil{return err}
 	if err:=os.MkdirAll("/run/netns",0755);err!=nil{return err};if err:=verifyRootPath("/run/netns");err!=nil{return err};if err:=verifyNetworkPools();err!=nil{return err}
-	if err:=verifyRootPath(filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent));err!=nil{return fmt.Errorf("unsafe delegated cgroup path: %w",err)}
-	controllers,err:=os.ReadFile(filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent,"cgroup.controllers"));if err!=nil{return fmt.Errorf("cgroup parent is not delegated: %w",err)}
-	for _,c:=range []string{"cpu","memory","pids","io"}{if !strings.Contains(" "+string(controllers)+" "," "+c+" "){return fmt.Errorf("cgroup v2 controller %s is unavailable",c)}}
-	parentProcs,err:=os.ReadFile(filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent,"cgroup.procs"));if err!=nil{return err};if len(bytes.TrimSpace(parentProcs))!=0{return errors.New("delegated cgroup parent must be empty; run the host agent in a sibling cgroup")}
+	if err:=r.ensureDelegatedCgroupParent();err!=nil{return err}
 	for _,p:=range []string{r.cfg.JailerPath,r.cfg.FirecrackerPath,"/usr/sbin/cryptsetup","/usr/sbin/mkfs.ext4","/usr/bin/mount","/usr/bin/umount","/usr/sbin/ip","/usr/sbin/nft","/usr/bin/setfacl","/usr/bin/getfacl"}{if _,err:=os.Stat(p);err!=nil{return fmt.Errorf("required host executable %s unavailable",p)}}
+	return nil
+}
+
+func currentHostCgroupPath()(string,error){
+	b,err:=os.ReadFile("/proc/self/cgroup");if err!=nil{return "",err}
+	for _,line:=range strings.Split(string(b),"\n"){if strings.HasPrefix(line,"0::"){rel:=strings.TrimPrefix(strings.TrimSpace(strings.TrimPrefix(line,"0::")),"/");return filepath.Join("/sys/fs/cgroup",rel),nil}}
+	return "",errors.New("host agent is not attached to the unified cgroup v2 hierarchy")
+}
+func (r *LinuxRuntime) ensureDelegatedCgroupParent()error{
+	parentRel:=filepath.Dir(r.cfg.CgroupParent)
+	if parentRel=="."||parentRel==".."||strings.HasPrefix(parentRel,"../")||filepath.IsAbs(parentRel){return errors.New("cgroup parent must be a child of the host-agent service cgroup")}
+	serviceRoot:=filepath.Join("/sys/fs/cgroup",parentRel)
+	if err:=verifyRootPath(serviceRoot);err!=nil{return fmt.Errorf("unsafe host-agent service cgroup: %w",err)}
+	current,err:=currentHostCgroupPath();if err!=nil{return err}
+	control:=filepath.Join(serviceRoot,"forgeos-control")
+	if current!=serviceRoot&&current!=control{return errors.New("host agent must run directly in its delegated service cgroup or its forgeos-control child")}
+	subtreePath:=filepath.Join(serviceRoot,"cgroup.subtree_control")
+	subtree,err:=os.ReadFile(subtreePath);if err!=nil{return err}
+	enabled:=true
+	for _,controller:=range []string{"cpu","memory","pids","io"}{if !strings.Contains(" "+string(subtree)+" "," "+controller+" "){enabled=false}}
+	if !enabled{
+		if current==serviceRoot{
+			if err:=os.MkdirAll(control,0750);err!=nil{return err}
+			if err:=os.WriteFile(filepath.Join(control,"cgroup.procs"),[]byte(strconv.Itoa(os.Getpid())),0640);err!=nil{return fmt.Errorf("move host agent into delegated control cgroup: %w",err)}
+		}
+		if err:=os.WriteFile(subtreePath,[]byte("+cpu +memory +pids +io"),0640);err!=nil{return fmt.Errorf("enable delegated host cgroup controllers: %w",err)}
+	}else if current==serviceRoot{
+		return errors.New("host agent cannot remain in the cgroup parent while domain controllers are enabled")
+	}
+	instanceParent:=filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent)
+	if err:=os.MkdirAll(instanceParent,0750);err!=nil{return err}
+	if err:=verifyRootPath(instanceParent);err!=nil{return fmt.Errorf("unsafe VM cgroup parent: %w",err)}
+	controllers,err:=os.ReadFile(filepath.Join(instanceParent,"cgroup.controllers"));if err!=nil{return err}
+	for _,controller:=range []string{"cpu","memory","pids","io"}{if !strings.Contains(" "+string(controllers)+" "," "+controller+" "){return fmt.Errorf("delegated cgroup controller %s is unavailable",controller)}}
+	procs,err:=os.ReadFile(filepath.Join(instanceParent,"cgroup.procs"));if err!=nil{return err};if len(bytes.TrimSpace(procs))!=0{return errors.New("VM cgroup parent must not contain processes")}
 	return nil
 }
 
