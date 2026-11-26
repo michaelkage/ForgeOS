@@ -183,6 +183,8 @@ func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
 	}
 	for _,raw:=range cfg.DNSResolvers { a,e:=netip.ParseAddr(raw);if e!=nil||!a.Is4()||!a.IsGlobalUnicast()||a.IsPrivate()||a.IsLinkLocalUnicast()||isForbiddenEgress(netip.PrefixFrom(a,32)){return nil,errors.New("DNS resolver must be a public unicast IPv4 address")} }
 	if len(cfg.DNSResolvers)==0{return nil,errors.New("at least one explicitly allowlisted public DNS resolver is required")}
+	if err:=os.MkdirAll(cfg.StateDir,0700);err!=nil{return nil,err};if err:=os.MkdirAll(cfg.ChrootBase,0700);err!=nil{return nil,err}
+	for _,p:=range []string{cfg.StateDir,cfg.ChrootBase}{st,e:=os.Lstat(p);if e!=nil{return nil,e};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok||sys.Uid!=0||st.Mode().Perm()&0022!=0{return nil,fmt.Errorf("runtime directory %s must be root-owned and not group/world writable",p)}}
 	return &LinuxRuntime{cfg:cfg,evidence:map[string]IsolationProfile{}},nil
 }
 
@@ -231,6 +233,7 @@ func (r *LinuxRuntime) Evidence(id string)(IsolationProfile,error){
 }
 
 func (r *LinuxRuntime) Inspect(id string)(string,error){
+	r.mu.Lock();defer r.mu.Unlock()
 	meta,err:=r.readMeta(id);if err!=nil { if os.IsNotExist(err){return "stopped",nil};return "unknown",err }
 	if time.Now().After(meta.Deadline){if err:=r.cleanup(meta);err!=nil{return "unknown",err};return "stopped",nil}
 	procs,err:=os.ReadFile(filepath.Join(meta.CgroupPath,"cgroup.procs"));if err!=nil{return "unknown",err}
@@ -381,7 +384,7 @@ func (r *LinuxRuntime) launchFirecracker(m runtimeMeta,req ProvisionRequest,kern
 }
 
 func (r *LinuxRuntime) sendBootstrap(m runtimeMeta,req ProvisionRequest)error{
-	payload:=map[string]any{"schemaVersion":1,"jobId":req.JobID,"attempt":req.Attempt,"architecture":req.Architecture,"imageDigest":req.ImageDigest,"apiBaseUrl":r.cfg.BootstrapAPIBaseURL,"bootstrapCredential":req.BootstrapCredential,"nonce":randomUUID(),"issuedAt":time.Now().UTC(),"expiresAt":time.Now().Add(90*time.Second).UTC()}
+	nonce,nonceErr:=randomUUID();if nonceErr!=nil{return nonceErr};issued:=time.Now().UTC();payload:=map[string]any{"schemaVersion":1,"jobId":req.JobID,"attempt":req.Attempt,"architecture":req.Architecture,"imageDigest":req.ImageDigest,"apiBaseUrl":r.cfg.BootstrapAPIBaseURL,"bootstrapCredential":req.BootstrapCredential,"nonce":nonce,"issuedAt":issued,"expiresAt":issued.Add(90*time.Second)}
 	// The guest verifies the Ed25519 signature using the pinned host key embedded in its immutable image.
 	signer,ok:=r.(interface{SignBootstrap(any)(string,error)});if !ok{return errors.New("host runtime bootstrap signer is unavailable")}
 	sig,err:=signer.SignBootstrap(payload);if err!=nil{return err}
@@ -447,8 +450,8 @@ func nftTableExists(family,table string)(bool,error){cmd:=exec.Command("/usr/sbi
 func ipLinkExists(name string)(bool,error){cmd:=exec.Command("/usr/sbin/ip","link","show","dev",name);err:=cmd.Run();if err==nil{return true,nil};if _,ok:=err.(*exec.ExitError);ok{return false,nil};return false,err}
 
 func isMountPoint(path string)(bool,error){b,e:=os.ReadFile("/proc/self/mountinfo");if e!=nil{return false,e};clean:=filepath.Clean(path);for _,line:=range strings.Split(string(b),"\n"){f:=strings.Fields(line);if len(f)>4&&f[4]==clean{return true,nil}};return false,nil}
-func (r *LinuxRuntime) Recover()error{entries,e:=os.ReadDir(r.cfg.StateDir);if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if e!=nil{errs=append(errs,e);continue};if e=r.cleanup(m);e!=nil{errs=append(errs,e)}};if len(errs)>0{return errors.Join(errs...)};return nil}
-func (r *LinuxRuntime) SweepExpired()error{entries,e:=os.ReadDir(r.cfg.StateDir);if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if e!=nil{errs=append(errs,e);continue};if time.Now().After(m.Deadline){if e=r.cleanup(m);e!=nil{errs=append(errs,e)}}};if len(errs)>0{return errors.Join(errs...)};return nil}
+func (r *LinuxRuntime) Recover()error{r.mu.Lock();defer r.mu.Unlock();entries,e:=os.ReadDir(r.cfg.StateDir);if os.IsNotExist(e){return nil};if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if e!=nil{errs=append(errs,e);continue};if e=r.cleanup(m);e!=nil{errs=append(errs,e)}};if len(errs)>0{return errors.Join(errs...)};return nil}
+func (r *LinuxRuntime) SweepExpired()error{r.mu.Lock();defer r.mu.Unlock();entries,e:=os.ReadDir(r.cfg.StateDir);if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if e!=nil{errs=append(errs,e);continue};if time.Now().After(m.Deadline){if e=r.cleanup(m);e!=nil{errs=append(errs,e)}}};if len(errs)>0{return errors.Join(errs...)};return nil}
 func verifyImageDigest(path,digest string)error{f,e:=os.Open(path);if e!=nil{return e};defer f.Close();h:=sha256.New();if _,e=io.Copy(h,f);e!=nil{return e};if "sha256:"+hex.EncodeToString(h.Sum(nil))!=digest{return errors.New("worker image bytes do not match the requested immutable SHA-256 digest")};return nil}
 func (r *LinuxRuntime) writeMeta(m runtimeMeta)error{b,e:=json.Marshal(m);if e!=nil{return e};tmp:=filepath.Join(r.cfg.StateDir,m.ID,"runtime.json.tmp");if e=os.WriteFile(tmp,b,0600);e!=nil{return e};return os.Rename(tmp,filepath.Join(r.cfg.StateDir,m.ID,"runtime.json"))}
 func (r *LinuxRuntime) readMeta(id string)(runtimeMeta,error){if !instancePattern.MatchString(id){return runtimeMeta{},errors.New("invalid instance ID")};b,e:=os.ReadFile(filepath.Join(r.cfg.StateDir,id,"runtime.json"));if e!=nil{return runtimeMeta{},e};var m runtimeMeta;e=json.Unmarshal(b,&m);return m,e}
