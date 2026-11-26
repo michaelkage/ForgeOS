@@ -13,7 +13,8 @@ try {
     new URL("../migrations/003_build_queue.sql", import.meta.url),
     new URL("../migrations/004_artifact_storage.sql", import.meta.url),
     new URL("../migrations/005_build_job_events.sql", import.meta.url),
-    new URL("../migrations/006_guest_bootstrap_credentials.sql", import.meta.url)
+    new URL("../migrations/006_guest_bootstrap_credentials.sql", import.meta.url),
+    new URL("../migrations/007_source_lockfiles.sql", import.meta.url)
   ];
   for (let pass = 0; pass < 2; pass++) {
     for (const migration of migrations) {
@@ -40,7 +41,7 @@ try {
     "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='forgeos_build_jobs'"
   );
   const jobNames = new Set(jobColumns.rows.map(row => row.column_name));
-  for (const required of ["snapshot", "snapshot_sha256", "status", "attempts", "lease_token", "lease_expires_at", "artifact_sha256"]) {
+  for (const required of ["snapshot", "snapshot_sha256", "status", "attempts", "lease_token", "lease_expires_at", "artifact_sha256", "source_lockfile", "source_lockfile_sha256"]) {
     assert.ok(jobNames.has(required), "Missing build queue column: " + required);
   }
   const jobIndexes = await client.query(
@@ -57,6 +58,7 @@ try {
   const jobConstraintNames = new Set(jobConstraints.rows.map(row => row.conname));
   assert.ok(jobConstraintNames.has("forgeos_build_job_terminal_timestamp"));
   assert.ok(jobConstraintNames.has("forgeos_build_job_artifact_consistency"));
+  assert.ok(jobConstraintNames.has("forgeos_build_job_source_lockfile_consistency"));
   assert.ok(jobConstraintNames.has("forgeos_build_job_verified_artifact_check"));
   const artifactColumns = await client.query(
     "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='forgeos_artifact_upload_intents'"
