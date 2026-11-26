@@ -32,7 +32,7 @@ func NewService(cfg Config)(*Service,error){
 	if err:=cfg.Validate();err!=nil{return nil,err}
 	for _,p:=range []string{cfg.TLSCertPath,cfg.TLSKeyPath,cfg.ClientCAPath,cfg.SignAPKJar,cfg.CertificatePath,cfg.PrivateKeyPath,cfg.JavaPath,cfg.JarSignerPath}{if err:=verifyProtectedFile(p,p==cfg.PrivateKeyPath||p==cfg.TLSKeyPath,p==cfg.JavaPath||p==cfg.JarSignerPath);err!=nil{return nil,fmt.Errorf("verify signing dependency %s: %w",p,err)}}
 	if err:=os.MkdirAll(cfg.WorkDir,0700);err!=nil{return nil,err}
-	st,err:=os.Stat(cfg.WorkDir);if err!=nil{return nil,err};if !st.IsDir()||st.Mode().Perm()&0077!=0{return nil,errors.New("signing work directory must be a directory inaccessible to other users")}
+	st,err:=os.Lstat(cfg.WorkDir);if err!=nil{return nil,err};if !st.IsDir()||st.Mode()&os.ModeSymlink!=0||st.Mode().Perm()&0077!=0{return nil,errors.New("signing work directory must be a directory inaccessible to other users")}
 	l,err:=openLedger(filepath.Join(cfg.WorkDir,"signing-ledger.jsonl"));if err!=nil{return nil,err}
 	s:=&Service{cfg:cfg,ledger:l,mux:http.NewServeMux(),slots:make(chan struct{},1)}
 	s.mux.HandleFunc("GET /healthz",s.health)
@@ -106,6 +106,7 @@ func(s *Service) sign(w http.ResponseWriter,r *http.Request){
 	outputPath:=filepath.Join(s.cfg.WorkDir,"signed",job+"-"+strconv.Itoa(attempt)+".zip")
 	if err:=os.MkdirAll(filepath.Dir(outputPath),0700);err!=nil{s.failReservation(reservation);http.Error(w,"signing workspace unavailable",http.StatusInternalServerError);return}
 	partial:=outputPath+".partial"
+	for _,candidate:=range []string{outputPath,partial}{if _,err:=os.Lstat(candidate);err==nil{s.failReservation(reservation);http.Error(w,"signing output path already exists; operator recovery is required",http.StatusConflict);return}else if !os.IsNotExist(err){s.failReservation(reservation);http.Error(w,"signing output path cannot be inspected",http.StatusInternalServerError);return}}
 	if err:=s.runSign(ctx,inputPath,partial);err!=nil{s.failReservation(reservation);_ = os.Remove(partial);http.Error(w,"OTA signing failed",http.StatusUnprocessableEntity);return}
 	if err:=verifyOTA(partial,true);err!=nil{s.failReservation(reservation);_ = os.Remove(partial);http.Error(w,"signed OTA verification failed",http.StatusUnprocessableEntity);return}
 	outHash,outSize,err:=hashFile(partial);if err!=nil{s.failReservation(reservation);_ = os.Remove(partial);http.Error(w,"signed artifact verification failed",http.StatusInternalServerError);return}
@@ -152,6 +153,7 @@ func verifyOTA(file string,requireSignature bool)error{
 	return nil
 }
 func hashFile(file string)(string,int64,error){
+	st,err:=os.Lstat(file);if err!=nil{return "",0,err};if !st.Mode().IsRegular()||st.Mode()&os.ModeSymlink!=0{return "",0,errors.New("artifact path is not a regular non-symlink file")}
 	f,err:=os.Open(file);if err!=nil{return "",0,err};defer f.Close()
 	h:=sha256.New();n,err:=io.Copy(h,f);if err!=nil{return "",n,err};return hex.EncodeToString(h.Sum(nil)),n,nil
 }
