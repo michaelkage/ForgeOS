@@ -95,7 +95,7 @@ func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
 	if !workerPattern.MatchString(cfg.WorkerID){return nil,errors.New("a stable worker ID is required")}
 	if cfg.VMMUIDBase<10000||cfg.VMMUIDBase>60000||cfg.VMMGIDBase<10000||cfg.VMMGIDBase>60000||cfg.IOBytesPerSecond<1_048_576 { return nil,errors.New("VMM identities and disk I/O limit are unsafe") }
 	if cfg.VsockPort==0 { cfg.VsockPort=4050 }
-	if cfg.BootstrapAPIBaseURL=="" { return nil,errors.New("bootstrap API base URL is required") }; apiURL,apiErr:=url.Parse(cfg.BootstrapAPIBaseURL); if apiErr!=nil||apiURL.Scheme!="https:"||apiURL.Host==""||apiURL.User!=nil||apiURL.RawQuery!=""||apiURL.Fragment!="" { return nil,errors.New("bootstrap API base URL must be a credential-free HTTPS origin") }; if len(cfg.SigningKey)!=ed25519.PrivateKeySize{return nil,errors.New("Ed25519 signing key is required")}
+	if cfg.BootstrapAPIBaseURL=="" { return nil,errors.New("bootstrap API base URL is required") }; apiURL,apiErr:=url.Parse(cfg.BootstrapAPIBaseURL); if apiErr!=nil||apiURL.Scheme!="https:"||apiURL.Host==""||apiURL.User!=nil||(apiURL.Path!=""&&apiURL.Path!="/")||apiURL.RawQuery!=""||apiURL.Fragment!="" { return nil,errors.New("bootstrap API base URL must be a credential-free HTTPS origin") }; if len(cfg.SigningKey)!=ed25519.PrivateKeySize{return nil,errors.New("Ed25519 signing key is required")}
 	for arch,path:=range cfg.KernelPaths { if (arch!="x86_64"&&arch!="arm64")||!filepath.IsAbs(path){return nil,errors.New("invalid kernel path mapping")} }
 	for digest,path:=range cfg.ImagePaths { if !digestPattern.MatchString(digest)||!filepath.IsAbs(path){return nil,errors.New("invalid image digest mapping")} }
 	for id,cidrs:=range cfg.EgressPolicies {
