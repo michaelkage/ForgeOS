@@ -109,7 +109,7 @@ func ParseSnapshot(raw []byte, expected string) (Snapshot,error) {
 	if s.Manifest.Path!=expectedManifest||s.Manifest.Branch==""||len(s.Manifest.Content)==0||len(s.Manifest.Content)>2*1024*1024{return s,errors.New("manifest snapshot does not match the selected ROM base or size policy")}
 	manifestHash:=sha256.Sum256([]byte(s.Manifest.Content));if hex.EncodeToString(manifestHash[:])!=s.Manifest.SHA256{return s,errors.New("embedded manifest content digest mismatch")}
 	if len(s.SourceInputs)>100{return s,errors.New("too many pinned source inputs")}
-	for _,src:=range s.SourceInputs{if !commitPattern.MatchString(src.CommitSHA)||!validGitHubURL(src.RepositoryURL)||!validGitRef(src.Branch)||!safeRelativePath(src.SourcePath){return s,errors.New("pinned source identity is invalid")}}
+	for _,src:=range s.SourceInputs{if (src.SourceKind!="device"&&src.SourceKind!="kernel"&&src.SourceKind!="vendor")||!commitPattern.MatchString(src.CommitSHA)||!validGitHubURL(src.RepositoryURL)||!validGitRef(src.Branch)||!safeRelativePath(src.SourcePath){return s,errors.New("pinned source identity is invalid")}}
 	if !commitPattern.MatchString(s.DeviceTree.CommitSHA)||!validGitHubURL(s.DeviceTree.RepositoryURL)||!validGitRef(s.DeviceTree.Branch)||!safeRelativePath(s.DeviceTree.SourcePath){return s,errors.New("device tree source identity is invalid")}
 	return s,nil
 }
