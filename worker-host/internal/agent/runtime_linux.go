@@ -236,8 +236,8 @@ func (r *LinuxRuntime) createCgroup(m runtimeMeta,res Resources)error{
 	if err:=os.Mkdir(m.CgroupPath,0750);err!=nil{return err}
 	quota:=res.CPUCores*100000
 	values:=map[string]string{"memory.max":strconv.FormatInt(int64(res.MemoryMiB+512)*1024*1024,10),"memory.swap.max":"0","memory.oom.group":"1","pids.max":strconv.Itoa(res.ProcessLimit),"cpu.max":fmt.Sprintf("%d 100000",quota)}
-	st,e:=os.Stat(m.DiskPath);if e!=nil{return e};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok{return errors.New("cannot determine ephemeral disk backing device")}
-	dev:=uint64(sys.Dev);major:=(dev>>8)&0xfff | (dev>>32)&0xfffff000;minor:=dev&0xff | (dev>>12)&0xffffff00
+	st,e:=os.Stat(filepath.Join("/dev/mapper",m.Mapper));if e!=nil{return e};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok{return errors.New("cannot identify encrypted VM block device")}
+	dev:=uint64(sys.Rdev);major:=unixMajor(dev);minor:=unixMinor(dev);if _,e:=os.Stat(fmt.Sprintf("/sys/dev/block/%d:%d",major,minor));e!=nil{return errors.New("encrypted VM block device is not registered in sysfs")}
 	values["io.max"]=fmt.Sprintf("%d:%d rbps=%d wbps=%d riops=1000 wiops=1000",major,minor,r.cfg.IOBytesPerSecond,r.cfg.IOBytesPerSecond)
 	for name,value:=range values{if err:=os.WriteFile(filepath.Join(m.CgroupPath,name),[]byte(value),0640);err!=nil{return fmt.Errorf("apply cgroup %s: %w",name,err)}}
 	return nil
@@ -422,8 +422,8 @@ func (r *LinuxRuntime) verifyCgroupLimits(m runtimeMeta)error{
 	swap,err:=read("memory.swap.max");if err!=nil||swap!="0"{return errors.New("VM swap is not disabled")}
 	oom,err:=read("memory.oom.group");if err!=nil||oom!="1"{return errors.New("VM memory OOM group is not enabled")}
 	pids,err:=read("pids.max");if err!=nil||pids!=strconv.Itoa(m.Resources.ProcessLimit){return errors.New("VM host process limit is not enforced")}
-	st,err:=os.Stat(m.DiskPath);if err!=nil{return err};if st.Size()!=int64(m.Resources.DiskGiB)*1024*1024*1024{return errors.New("encrypted VM disk size does not match its hard quota")};mounted,err:=isMountPoint(m.JailDir);if err!=nil||!mounted{return errors.New("encrypted VM workspace is not mounted")};if _,err:=os.Stat(filepath.Join("/dev/mapper",m.Mapper));err!=nil{return errors.New("encrypted VM block mapping is unavailable")};if !m.Deadline.After(m.CreatedAt)||m.Deadline.Sub(m.CreatedAt)>time.Duration(m.Resources.WallTimeSeconds)*time.Second+time.Second{return errors.New("VM wall-time deadline is invalid")};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok{return errors.New("cannot identify VM disk backing device")}
-	ioMax,err:=read("io.max");if err!=nil{return err};expected:=fmt.Sprintf("%d:%d rbps=%d wbps=%d",unixMajor(uint64(sys.Dev)),unixMinor(uint64(sys.Dev)),r.cfg.IOBytesPerSecond,r.cfg.IOBytesPerSecond);if !strings.Contains(ioMax,expected){return errors.New("VM disk I/O limit is not enforced")}
+	st,err:=os.Stat(m.DiskPath);if err!=nil{return err};if st.Size()!=int64(m.Resources.DiskGiB)*1024*1024*1024{return errors.New("encrypted VM disk size does not match its hard quota")};mounted,err:=isMountPoint(m.JailDir);if err!=nil||!mounted{return errors.New("encrypted VM workspace is not mounted")};if _,err:=os.Stat(filepath.Join("/dev/mapper",m.Mapper));err!=nil{return errors.New("encrypted VM block mapping is unavailable")};if !m.Deadline.After(m.CreatedAt)||m.Deadline.Sub(m.CreatedAt)>time.Duration(m.Resources.WallTimeSeconds)*time.Second+time.Second{return errors.New("VM wall-time deadline is invalid")};mapperInfo,err:=os.Stat(filepath.Join("/dev/mapper",m.Mapper));if err!=nil{return errors.New("encrypted VM block device is unavailable")};sys,ok:=mapperInfo.Sys().(*syscall.Stat_t);if !ok{return errors.New("cannot identify encrypted VM block device")};major,minor:=unixMajor(uint64(sys.Rdev)),unixMinor(uint64(sys.Rdev));if _,err:=os.Stat(fmt.Sprintf("/sys/dev/block/%d:%d",major,minor));err!=nil{return errors.New("encrypted VM block device is not registered in sysfs")}
+	ioMax,err:=read("io.max");if err!=nil{return err};expected:=fmt.Sprintf("%d:%d rbps=%d wbps=%d",major,minor,r.cfg.IOBytesPerSecond,r.cfg.IOBytesPerSecond);if !strings.Contains(ioMax,expected){return errors.New("VM disk I/O limit is not enforced")}
 	return nil
 }
 func (r *LinuxRuntime) verifyNetworkIsolation(m runtimeMeta)error{
