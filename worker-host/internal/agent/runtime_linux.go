@@ -55,6 +55,7 @@ type LinuxRuntime struct {
 	mu sync.Mutex
 	evidence map[string]IsolationProfile
 	terminating map[string]bool
+	verifiedAt map[string]time.Time
 }
 
 type runtimeMeta struct {
@@ -105,7 +106,7 @@ func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
 	if len(cfg.DNSResolvers)==0{return nil,errors.New("at least one explicitly allowlisted public DNS resolver is required")}
 	if err:=os.MkdirAll(cfg.StateDir,0700);err!=nil{return nil,err};if err:=os.MkdirAll(cfg.ChrootBase,0700);err!=nil{return nil,err}
 	for _,p:=range []string{cfg.StateDir,cfg.ChrootBase}{if e:=verifyRootPath(p);e!=nil{return nil,fmt.Errorf("unsafe runtime directory %s: %w",p,e)};st,e:=os.Lstat(p);if e!=nil{return nil,e};if st.Mode().Perm()&0077!=0{return nil,fmt.Errorf("runtime directory %s must be mode 0700",p)}}
-	return &LinuxRuntime{cfg:cfg,evidence:map[string]IsolationProfile{},terminating:map[string]bool{}},nil
+	return &LinuxRuntime{cfg:cfg,evidence:map[string]IsolationProfile{},terminating:map[string]bool{},verifiedAt:map[string]time.Time{}},nil
 }
 
 func validateEgressCIDR(raw string)error{p,err:=netip.ParsePrefix(raw);if err!=nil||!p.Addr().Is4()||isForbiddenEgress(p){return errors.New("egress CIDR must be public IPv4 and must not include private, reserved, or metadata ranges")};return nil}
@@ -154,7 +155,7 @@ func (r *LinuxRuntime) Provision(req ProvisionRequest,id string) error {
 
 func (r *LinuxRuntime) Evidence(id string)(IsolationProfile,error){
 	r.mu.Lock();defer r.mu.Unlock()
-	m,err:=r.readMeta(id);if err!=nil||m.Phase!="running"{return IsolationProfile{},errors.New("isolation evidence is unavailable")};if err:=r.verifyFirecrackerInCgroup(m);err!=nil{return IsolationProfile{},err};if err:=r.moveKvmPitThreads();err!=nil{return IsolationProfile{},err};if p,ok:=r.evidence[id];ok{return p,nil};return IsolationProfile{FirecrackerMicroVM:true,DedicatedKernel:true,Jailer:true,NonRootVMM:true,NoHostMounts:true,NoContainerSocket:true,NoHostPIDNamespace:true,EncryptedEphemeralDisk:true,HardCPULimit:true,HardMemoryLimit:true,HardDiskLimit:true,HardProcessLimit:true,WallTimeLimit:true,EgressFiltering:true,MetadataBlocked:true,DestroyAfterJob:true,EgressPolicyID:m.EgressPolicyID,Resources:m.Resources},nil
+	m,err:=r.readMeta(id);if err!=nil||m.Phase!="running"{return IsolationProfile{},errors.New("isolation evidence is unavailable")};if err:=r.verifyFirecrackerInCgroup(m);err!=nil{return IsolationProfile{},err};if err:=r.verifyCgroupLimits(m);err!=nil{return IsolationProfile{},err};if err:=r.verifyNetworkIsolation(m);err!=nil{return IsolationProfile{},err};if err:=r.moveKvmPitThreads();err!=nil{return IsolationProfile{},err};r.verifiedAt[id]=time.Now();if p,ok:=r.evidence[id];ok{return p,nil};return IsolationProfile{FirecrackerMicroVM:true,DedicatedKernel:true,Jailer:true,NonRootVMM:true,NoHostMounts:true,NoContainerSocket:true,NoHostPIDNamespace:true,EncryptedEphemeralDisk:true,HardCPULimit:true,HardMemoryLimit:true,HardDiskLimit:true,HardProcessLimit:true,WallTimeLimit:true,EgressFiltering:true,MetadataBlocked:true,DestroyAfterJob:true,EgressPolicyID:m.EgressPolicyID,Resources:m.Resources},nil
 }
 
 func (r *LinuxRuntime) Inspect(id string)(string,error){
@@ -406,9 +407,39 @@ func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 	if mounted,e:=isMountPoint(m.JailDir);e!=nil{return e}else if mounted{return errors.New("encrypted VM storage remains mounted after teardown")}
 	if _,e:=os.Stat(m.JailDir);e==nil{if e=os.RemoveAll(m.JailDir);e!=nil{return e}}
 	statePath:=filepath.Join(r.cfg.StateDir,m.ID);if err:=os.RemoveAll(statePath);err!=nil{return err};if _,err:=os.Stat(statePath);!os.IsNotExist(err){return errors.New("ephemeral VM state remains after teardown")}
-	delete(r.evidence,m.ID);delete(r.terminating,m.ID)
+	delete(r.evidence,m.ID);delete(r.terminating,m.ID);delete(r.verifiedAt,m.ID)
 	return nil
 }
+func (r *LinuxRuntime) terminateAllForHostDrift(cause error)error{
+	entries,_:=os.ReadDir(r.cfg.StateDir);var errs []error
+	for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};if m,e:=r.readMeta(entry.Name());e==nil{m.Phase="terminating";r.terminating[m.ID]=true;_ = r.writeMeta(m);if e=r.cleanup(m);e!=nil{errs=append(errs,e)}}}
+	return errors.Join(append([]error{cause},errs...)...)
+}
+func (r *LinuxRuntime) verifyCgroupLimits(m runtimeMeta)error{
+	read:=func(name string)(string,error){b,e:=os.ReadFile(filepath.Join(m.CgroupPath,name));return strings.TrimSpace(string(b)),e}
+	cpu,err:=read("cpu.max");if err!=nil||cpu!=fmt.Sprintf("%d00000 100000",m.Resources.CPUCores){return errors.New("VM CPU quota is not enforced")}
+	memory,err:=read("memory.max");if err!=nil||memory!=strconv.FormatInt(int64(m.Resources.MemoryMiB+512)*1024*1024,10){return errors.New("VM memory limit is not enforced")}
+	swap,err:=read("memory.swap.max");if err!=nil||swap!="0"{return errors.New("VM swap is not disabled")}
+	oom,err:=read("memory.oom.group");if err!=nil||oom!="1"{return errors.New("VM memory OOM group is not enabled")}
+	pids,err:=read("pids.max");if err!=nil||pids!=strconv.Itoa(m.Resources.ProcessLimit){return errors.New("VM host process limit is not enforced")}
+	st,err:=os.Stat(m.DiskPath);if err!=nil{return err};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok{return errors.New("cannot identify VM disk backing device")}
+	ioMax,err:=read("io.max");if err!=nil{return err};expected:=fmt.Sprintf("%d:%d rbps=%d wbps=%d",unixMajor(uint64(sys.Dev)),unixMinor(uint64(sys.Dev)),r.cfg.IOBytesPerSecond,r.cfg.IOBytesPerSecond);if !strings.Contains(ioMax,expected){return errors.New("VM disk I/O limit is not enforced")}
+	return nil
+}
+func (r *LinuxRuntime) verifyNetworkIsolation(m runtimeMeta)error{
+	cidrs,ok:=r.cfg.EgressPolicies[m.EgressPolicyID];if !ok{return errors.New("VM egress policy is no longer allowlisted")}
+	host,err:=runOutput("/usr/sbin/nft","list","table","inet",m.PolicyTable);if err!=nil{return err}
+	inside,err:=runOutput("/usr/sbin/ip","netns","exec",m.NetNS,"nft","list","table","inet",m.PolicyTable);if err!=nil{return err}
+	nat,err:=runOutput("/usr/sbin/nft","list","table","ip",m.NATTable);if err!=nil{return err}
+	h:=string(host);n:=string(inside);z:=string(nat)
+	for _,rule:=range []string{fmt.Sprintf("iifname \"%s\" drop",m.HostVeth),fmt.Sprintf("oifname \"%s\" ct state established,related accept",m.HostVeth)}{if !strings.Contains(h,rule){return errors.New("host egress firewall is incomplete")}}
+	if !strings.Contains(n,"policy drop")||!strings.Contains(n,fmt.Sprintf("iifname \"%s\" drop",m.Tap))||!strings.Contains(n,fmt.Sprintf("oifname \"%s\" ct state established,related accept",m.Tap)){return errors.New("guest network namespace firewall is incomplete")}
+	for _,cidr:=range cidrs{if !strings.Contains(h,fmt.Sprintf("ip daddr %s tcp dport 443 accept",cidr))||!strings.Contains(n,fmt.Sprintf("ip daddr %s tcp dport 443 accept",cidr)){return fmt.Errorf("HTTPS egress rule for %s is missing",cidr)}}
+	for _,dns:=range r.cfg.DNSResolvers{for _,proto:=range []string{"udp","tcp"}{rule:=fmt.Sprintf("ip daddr %s %s dport 53 accept",dns,proto);if !strings.Contains(h,rule)||!strings.Contains(n,rule){return fmt.Errorf("DNS egress rule for %s is missing",dns)}}}
+	if !strings.Contains(z,fmt.Sprintf("ip saddr %s masquerade",m.NetworkCIDR)){return errors.New("VM source NAT rule is missing")}
+	return nil
+}
+
 func verifyNetworkPools()error{
 	out,err:=runOutput("/usr/sbin/ip","-4","route","show","table","all");if err!=nil{return fmt.Errorf("inspect host IPv4 routes: %w",err)}
 	pools:=[]netip.Prefix{netip.MustParsePrefix("10.252.0.0/16"),netip.MustParsePrefix("10.253.0.0/16")}
@@ -464,13 +495,24 @@ func isMountPoint(path string)(bool,error){b,e:=os.ReadFile("/proc/self/mountinf
 func (r *LinuxRuntime) Recover()error{r.mu.Lock();defer r.mu.Unlock();entries,e:=os.ReadDir(r.cfg.StateDir);if os.IsNotExist(e){return nil};if e!=nil{return e};var errs []error;for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if os.IsNotExist(e){_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,entry.Name()));continue};if e!=nil{errs=append(errs,e);continue};if e=r.cleanup(m);e!=nil{errs=append(errs,e)}};if len(errs)>0{return errors.Join(errs...)};return nil}
 func (r *LinuxRuntime) SweepExpired()error{
 	r.mu.Lock();defer r.mu.Unlock()
-	if err:=r.moveKvmPitThreads();err!=nil{
-		entries,_:=os.ReadDir(r.cfg.StateDir)
+	if err:=verifyHostHardening();err!=nil{return r.terminateAllForHostDrift(err)}
+	if err:=r.moveKvmPitThreads();err!=nil{return r.terminateAllForHostDrift(err)}
+	entries,_:=os.ReadDir(r.cfg.StateDir);
+	_ = entries
+	if false { entries,_:=os.ReadDir(r.cfg.StateDir)
 		for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};if m,e:=r.readMeta(entry.Name());e==nil{m.Phase="terminating";r.terminating[m.ID]=true;_ = r.writeMeta(m);_ = r.cleanup(m)}}
-		return fmt.Errorf("KVM timer thread could not be bound to VM CPU cgroup; all active VMs were torn down: %w",err)
+		return errors.New("unreachable")
 	}
 	entries,e:=os.ReadDir(r.cfg.StateDir);if os.IsNotExist(e){return nil};if e!=nil{return e};var errs []error
-	for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if os.IsNotExist(e){_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,entry.Name()));continue};if e!=nil{errs=append(errs,e);continue};if m.Phase!="running"||r.terminating[m.ID]||time.Now().After(m.Deadline){m.Phase="terminating";r.terminating[m.ID]=true;_ = r.writeMeta(m);if e=r.cleanup(m);e!=nil{errs=append(errs,e)}}}
+	for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if os.IsNotExist(e){_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,entry.Name()));continue};if e!=nil{errs=append(errs,e);continue};if m.Phase=="running"&&!r.terminating[m.ID]&&!time.Now().After(m.Deadline){
+			if time.Since(r.verifiedAt[m.ID])>=5*time.Second{
+				verifyErr:=r.verifyFirecrackerInCgroup(m);if verifyErr==nil{verifyErr=r.verifyCgroupLimits(m)};if verifyErr==nil{verifyErr=r.verifyNetworkIsolation(m)}
+				if verifyErr!=nil{m.Phase="terminating";r.terminating[m.ID]=true;_ = r.writeMeta(m);if e=r.cleanup(m);e!=nil{errs=append(errs,e)};errs=append(errs,fmt.Errorf("VM %s isolation drift: %w",m.ID,verifyErr));continue}
+				r.verifiedAt[m.ID]=time.Now()
+			}
+			continue
+		}
+		m.Phase="terminating";r.terminating[m.ID]=true;_ = r.writeMeta(m);if e=r.cleanup(m);e!=nil{errs=append(errs,e)}}
 	if len(errs)>0{return errors.Join(errs...)};return nil
 }
 func verifyImageDigest(path,digest string)error{f,e:=os.Open(path);if e!=nil{return e};defer f.Close();h:=sha256.New();if _,e=io.Copy(h,f);e!=nil{return e};if "sha256:"+hex.EncodeToString(h.Sum(nil))!=digest{return errors.New("worker image bytes do not match the requested immutable SHA-256 digest")};return nil}
