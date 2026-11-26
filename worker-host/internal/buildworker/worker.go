@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -34,6 +35,9 @@ func Run(ctx context.Context,cfg Config)error{
 	manifestURL:=lineageManifestURL;if s.Configuration.ROMBase=="crdroid"{manifestURL=crdroidManifestURL}
 	manifestArgs:=[]string{"init","-u",manifestURL,"-b",s.Configuration.ManifestRevision,"-m",s.Manifest.Path,"--depth=1","--no-clone-bundle"}
 	if err:=run(ctx,workspace,30*time.Minute,"/usr/local/bin/repo",manifestArgs...);err!=nil{return fmt.Errorf("repo init: %w",err)}
+	manifestPath:=filepath.Join(workspace,".repo","manifests",filepath.FromSlash(s.Manifest.Path))
+	if err:=os.MkdirAll(filepath.Dir(manifestPath),0700);err!=nil{return err}
+	if err:=os.WriteFile(manifestPath,[]byte(s.Manifest.Content),0600);err!=nil{return err}
 	manifest,err:=pinManifest(s.Manifest.Content,s);if err!=nil{return err}
 	if err:=os.MkdirAll(filepath.Join(workspace,".repo","local_manifests"),0700);err!=nil{return err}
 	if err:=os.WriteFile(filepath.Join(workspace,".repo","local_manifests","forgeos-pinned.xml"),manifest,0600);err!=nil{return err}
@@ -75,13 +79,14 @@ func copyFile(source,destination string)error{
 	if err:=os.Rename(tmp,destination);err!=nil{_ = os.Remove(tmp);return err};return nil
 }
 func verifyFlashableZIP(file string)error{
-	st,err:=os.Stat(file);if err!=nil{return err};if !st.Mode().IsRegular()||st.Size()<1024||st.Size()>20*1024*1024*1024{return errors.New("build output ZIP has an invalid file type or size")}
+	st,err:=os.Lstat(file);if err!=nil{return err};if !st.Mode().IsRegular()||st.Mode()&os.ModeSymlink!=0||st.Size()<1024||st.Size()>20*1024*1024*1024{return errors.New("build output ZIP has an invalid file type or size")}
 	zr,err:=zip.OpenReader(file);if err!=nil{return fmt.Errorf("build output is not a valid ZIP archive: %w",err)};defer zr.Close()
 	if len(zr.File)==0||len(zr.File)>200000{return errors.New("build output ZIP entry count is outside policy")}
 	payload,updater:=false,false
 	for _,f:=range zr.File{
-		name:=strings.ReplaceAll(f.Name,"\\","/")
-		if strings.HasPrefix(name,"/")||strings.Contains(name,"../")||name==".."||strings.Contains(name,":"){return errors.New("build output ZIP contains an unsafe entry path")}
+		name:=strings.ReplaceAll(f.Name,"\\","/");clean:=path.Clean(name)
+		if strings.HasPrefix(name,"/")||clean==".."||strings.HasPrefix(clean,"../")||strings.Contains(name,":")||clean!=name{return errors.New("build output ZIP contains an unsafe entry path")}
+		if f.Mode()&os.ModeSymlink!=0{return errors.New("build output ZIP contains a symbolic link entry")}
 		if name=="payload.bin"{payload=true}
 		if name=="META-INF/com/google/android/update-binary"{updater=true}
 	}
