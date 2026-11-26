@@ -13,6 +13,7 @@ import { createSession, destroySession, hashPassword, loadSession, requireAdmin,
 import { validateRepositoryManifest } from "./manifest.js";
 import { deviceSourceSchema, verifyDeviceSource } from "./device-resolver.js";
 import { registerBuildRoutes } from "./build-queue.js";
+import { registerGuestBootstrapRoutes } from "./guest-bootstrap-credentials.js";
 
 const app = Fastify({ logger: true, trustProxy: config.TRUST_PROXY.length ? config.TRUST_PROXY : false, bodyLimit: 256 * 1024 });
 await app.register(helmet, {
@@ -326,6 +327,7 @@ app.post("/api/configurations/:id/validate", async (request,reply) => {
   return {report};
 });
 await registerBuildRoutes(app);
+await registerGuestBootstrapRoutes(app);
 
 app.setNotFoundHandler((_request,reply)=>reply.code(404).send({error:"not_found"}));
 app.setErrorHandler((error,request,reply)=>{request.log.error(error);reply.code(500).send({error:"internal_server_error"});});
