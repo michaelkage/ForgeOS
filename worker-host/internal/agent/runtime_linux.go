@@ -86,6 +86,7 @@ func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
 	if cfg.StateDir==""||cfg.ChrootBase==""||cfg.CgroupParent==""||cfg.JailerPath==""||cfg.FirecrackerPath=="" { return nil,errors.New("Linux runtime paths are required") }
 	if !regexp.MustCompile("^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$").MatchString(cfg.CgroupParent)||strings.Contains(cfg.CgroupParent,".."){return nil,errors.New("cgroup parent must be a safe relative path")}
 	if cfg.VMMUIDBase+2000>60000||cfg.VMMGIDBase+2000>60000{return nil,errors.New("VMM identity pool exceeds the reserved system range")}
+	if !workerPattern.MatchString(cfg.WorkerID){return nil,errors.New("a stable worker ID is required")}
 	if cfg.VMMUIDBase<10000||cfg.VMMGIDBase<10000||cfg.IOBytesPerSecond<1_048_576 { return nil,errors.New("VMM identities and disk I/O limit are unsafe") }
 	if cfg.VsockPort==0 { cfg.VsockPort=4050 }
 	if cfg.BootstrapAPIBaseURL=="" { return nil,errors.New("bootstrap API base URL is required") }; apiURL,apiErr:=url.Parse(cfg.BootstrapAPIBaseURL); if apiErr!=nil||apiURL.Scheme!="https:"||apiURL.Host==""||apiURL.User!=nil||apiURL.RawQuery!=""||apiURL.Fragment!="" { return nil,errors.New("bootstrap API base URL must be a credential-free HTTPS origin") }; if len(cfg.SigningKey)!=ed25519.PrivateKeySize{return nil,errors.New("Ed25519 signing key is required")}
@@ -308,7 +309,7 @@ func (r *LinuxRuntime) launchFirecracker(m runtimeMeta,req ProvisionRequest,kern
 }
 
 func (r *LinuxRuntime) sendBootstrap(m runtimeMeta,req ProvisionRequest)error{
-	nonce,nonceErr:=randomUUID();if nonceErr!=nil{return nonceErr};issued:=time.Now().UTC();payload:=map[string]any{"schemaVersion":1,"jobId":req.JobID,"attempt":req.Attempt,"architecture":req.Architecture,"imageDigest":req.ImageDigest,"resources":req.Resources,"apiBaseUrl":r.cfg.BootstrapAPIBaseURL,"bootstrapCredential":req.BootstrapCredential,"nonce":nonce,"issuedAt":issued,"expiresAt":issued.Add(180*time.Second)}
+	nonce,nonceErr:=randomUUID();if nonceErr!=nil{return nonceErr};issued:=time.Now().UTC();workerID:=req.WorkerID;if workerID==""{workerID=r.cfg.WorkerID};if !workerPattern.MatchString(workerID){return errors.New("invalid guest worker identity")};payload:=map[string]any{"schemaVersion":1,"jobId":req.JobID,"attempt":req.Attempt,"workerId":workerID,"architecture":req.Architecture,"imageDigest":req.ImageDigest,"resources":req.Resources,"apiBaseUrl":r.cfg.BootstrapAPIBaseURL,"bootstrapCredential":req.BootstrapCredential,"nonce":nonce,"issuedAt":issued,"expiresAt":issued.Add(180*time.Second)}
 	// The guest verifies the Ed25519 signature using the pinned host key embedded in its immutable image.
 	sig,err:=r.SignBootstrap(payload);if err!=nil{return err}
 	envelope:=map[string]any{"payload":payload,"signature":sig}
