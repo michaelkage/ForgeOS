@@ -124,7 +124,7 @@ func (r *LinuxRuntime) Provision(req ProvisionRequest,id string) error {
 	rollback:=func(cause error)error{_ = r.cleanup(meta);return cause}
 	meta.Resources=req.Resources;meta.EgressPolicyID=req.EgressPolicyID
 	if err:=os.MkdirAll(filepath.Join(r.cfg.StateDir,id),0700);err!=nil{return err}
-	if err:=r.writeMeta(meta);err!=nil{return err}
+	if err:=r.writeMeta(meta);err!=nil{_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,id));return err}
 	if err:=r.createEncryptedDisk(meta,req.Resources.DiskGiB,baseImage);err!=nil{return rollback(err)}
 	if err:=r.createCgroup(meta,req.Resources);err!=nil{return rollback(err)}
 	if err:=r.setupNetwork(meta,cidrs);err!=nil{return rollback(err)}
@@ -174,7 +174,7 @@ func (r *LinuxRuntime) preflight()error{
 	if uint64(fs.Type)!=0x63677270{return errors.New("cgroup v2 is required")}
 	controllers,err:=os.ReadFile(filepath.Join("/sys/fs/cgroup",r.cfg.CgroupParent,"cgroup.controllers"));if err!=nil{return fmt.Errorf("cgroup parent is not delegated: %w",err)}
 	for _,c:=range []string{"cpu","memory","pids","io"}{if !strings.Contains(" "+string(controllers)+" "," "+c+" "){return fmt.Errorf("cgroup v2 controller %s is unavailable",c)}}
-	for _,p:=range []string{r.cfg.JailerPath,r.cfg.FirecrackerPath,"/usr/sbin/cryptsetup","/usr/sbin/mkfs.ext4","/usr/bin/mount","/usr/bin/umount","/usr/sbin/ip","/usr/sbin/nft","/usr/bin/setfacl"}{if _,err:=os.Stat(p);err!=nil{return fmt.Errorf("required host executable %s unavailable",p)}}
+	for _,p:=range []string{r.cfg.JailerPath,r.cfg.FirecrackerPath,"/usr/sbin/cryptsetup","/usr/sbin/mkfs.ext4","/usr/bin/mount","/usr/bin/umount","/usr/sbin/ip","/usr/sbin/nft","/usr/bin/setfacl","/usr/bin/getfacl"}{if _,err:=os.Stat(p);err!=nil{return fmt.Errorf("required host executable %s unavailable",p)}}
 	return nil
 }
 
@@ -191,7 +191,7 @@ func (r *LinuxRuntime) makeMeta(req ProvisionRequest,id string)(runtimeMeta,erro
 	entries,_:=os.ReadDir(r.cfg.StateDir)
 	for _,entry:=range entries{if !entry.IsDir(){continue};b,e:=os.ReadFile(filepath.Join(r.cfg.StateDir,entry.Name(),"runtime.json"));if e!=nil{continue};var old runtimeMeta;if json.Unmarshal(b,&old)==nil{usedUID[old.UID]=true;usedNet[old.NetworkCIDR]=true}}
 	slot:=int(sum[0])<<8|int(sum[1]);slot%=2000;uid,gid:=0,0
-	for n:=0;n<2000;n++{candidate:=(slot+n)%2000;u:=r.cfg.VMMUIDBase+candidate;if !usedUID[u]{uid=u;gid=r.cfg.VMMGIDBase+candidate;break}}
+	for n:=0;n<2000;n++{candidate:=(slot+n)%2000;u:=r.cfg.VMMUIDBase+candidate;if usedUID[u]{continue};g:=r.cfg.VMMGIDBase+candidate;if _,e:=user.LookupId(strconv.Itoa(u));e==nil{continue};if _,e:=user.LookupGroupId(strconv.Itoa(g));e==nil{continue};uid=u;gid=g;break}
 	if uid==0||gid==0{return runtimeMeta{},errors.New("no free per-VM VMM identity remains")}
 	netSlot:=int(sum[2])<<8|int(sum[3]);netSlot%=16000
 	var gateway,guest,hostVethIP,guestVethIP netip.Addr
@@ -231,7 +231,7 @@ func (r *LinuxRuntime) createEncryptedDisk(m runtimeMeta,diskGiB int,baseImage s
 	if err:=run(context.Background(),"/usr/bin/mount",device,m.JailDir);err!=nil{return err}
 	m.Mounted=true
 	root:=filepath.Join(m.JailDir,"root")
-	for _,p:=range []string{filepath.Join(root,"boot"),filepath.Join(root,"run"),filepath.Join(root,"var/lib/forgeos")}{if err:=os.MkdirAll(p,0750);err!=nil{return err}}
+	for _,p:=range []string{root,filepath.Join(root,"boot"),filepath.Join(root,"run"),filepath.Join(root,"var"),filepath.Join(root,"var/lib"),filepath.Join(root,"var/lib/forgeos")}{if err:=os.MkdirAll(p,0750);err!=nil{return err};if err:=os.Chown(p,m.UID,m.GID);err!=nil{return err}}
 	target:=filepath.Join(root,"var/lib/forgeos/rootfs.ext4")
 	src,err:=os.Open(baseImage);if err!=nil{return err};defer src.Close()
 	dst,err:=os.OpenFile(target,os.O_CREATE|os.O_EXCL|os.O_WRONLY,0600);if err!=nil{return err}
@@ -288,11 +288,12 @@ func (r *LinuxRuntime) launchFirecracker(m runtimeMeta,req ProvisionRequest,kern
 	if err:=os.Chown(kernelTarget,m.UID,m.GID);err!=nil{return err}
 	if err:=run(context.Background(),"/usr/bin/setfacl","-m","u:"+strconv.Itoa(m.UID)+":rw","/dev/kvm");err!=nil{return err}
 	apiSocket:=filepath.Join(m.RootDir,"run/firecracker.socket")
-	vsockSocket:=filepath.Join(m.RootDir,"run/forgeos-vsock.sock")
 	args:=[]string{"--id",m.ID,"--exec-file",r.cfg.FirecrackerPath,"--uid",strconv.Itoa(m.UID),"--gid",strconv.Itoa(m.GID),"--chroot-base-dir",r.cfg.ChrootBase,"--cgroup-version","2","--parent-cgroup",filepath.Join(r.cfg.CgroupParent,m.ID),"--netns","/run/netns/"+m.NetNS,"--resource-limit","no-file=4096","--new-pid-ns","--seccomp-level","2","--","--api-sock","/run/firecracker.socket"}
 	cmd:=exec.Command(r.cfg.JailerPath,args...)
+	cmd.Env=[]string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin","LANG=C","LC_ALL=C"}
 	cmd.Stdout=io.Discard;cmd.Stderr=io.Discard
 	if err:=cmd.Start();err!=nil{return fmt.Errorf("start Firecracker jailer: %w",err)}
+	go func(){_ = cmd.Wait()}()
 	if err:=waitForSocket(apiSocket,10*time.Second);err!=nil{_ = cmd.Process.Kill();return err}
 	api:=newUnixAPI(apiSocket)
 	machine:=map[string]any{"vcpu_count":req.Resources.CPUCores,"mem_size_mib":req.Resources.MemoryMiB,"smt":false}
@@ -325,8 +326,8 @@ func (r *LinuxRuntime) sendBootstrap(m runtimeMeta,req ProvisionRequest)error{
 				var hdr [4]byte;hdr[0]=byte(len(data)>>24);hdr[1]=byte(len(data)>>16);hdr[2]=byte(len(data)>>8);hdr[3]=byte(len(data))
 				_,err=io.Copy(conn,bytes.NewReader(append(hdr[:],data...)))
 			}
+			if err==nil{_ = conn.SetReadDeadline(time.Now().Add(5*time.Second));ack,ackErr:=bufio.NewReader(conn).ReadString('\n');if ackErr==nil&&ack=="BOOTSTRAP_REDEEMED\n"{_ = conn.Close();return nil};err=errors.New("guest did not confirm bootstrap redemption")}
 			_ = conn.Close()
-			if err==nil{_ = conn.SetReadDeadline(time.Now().Add(5*time.Second));ack,ackErr:=bufio.NewReader(conn).ReadString('\n');if ackErr==nil&&ack=="BOOTSTRAP_REDEEMED\n"{return nil};err=errors.New("guest did not confirm bootstrap redemption")}
 		}
 		time.Sleep(250*time.Millisecond)
 	}
@@ -385,7 +386,7 @@ func newUnixAPI(path string)*unixAPI{tr:=&http.Transport{DialContext:func(ctx co
 func (u *unixAPI) Put(path string,v any)error{b,e:=json.Marshal(v);if e!=nil{return e};req,e:=http.NewRequest(http.MethodPut,"http://localhost"+path,bytes.NewReader(b));if e!=nil{return e};req.Header.Set("Content-Type","application/json");resp,e:=u.client.Do(req);if e!=nil{return e};defer resp.Body.Close();if resp.StatusCode<200||resp.StatusCode>=300{body,_:=io.ReadAll(io.LimitReader(resp.Body,2048));return fmt.Errorf("Firecracker API %s returned %d: %s",path,resp.StatusCode,strings.TrimSpace(string(body)))};return nil}
 func (u *unixAPI) Get(path string,v any)error{resp,e:=u.client.Get("http://localhost"+path);if e!=nil{return e};defer resp.Body.Close();if resp.StatusCode!=200{return fmt.Errorf("Firecracker API returned %d",resp.StatusCode)};return json.NewDecoder(io.LimitReader(resp.Body,4096)).Decode(v)}
 
-func run(ctx context.Context,path string,args ...string)error{cmd:=exec.CommandContext(ctx,path,args...);out,err:=cmd.CombinedOutput();if err!=nil{return fmt.Errorf("%s failed (%v): %s",filepath.Base(path),err,strings.TrimSpace(string(out)))};return nil}
-func runInput(ctx context.Context,path string,input []byte,args ...string)error{cmd:=exec.CommandContext(ctx,path,args...);cmd.Stdin=bytes.NewReader(input);out,err:=cmd.CombinedOutput();if err!=nil{return fmt.Errorf("%s failed (%v): %s",filepath.Base(path),err,strings.TrimSpace(string(out)))};return nil}
+func run(ctx context.Context,path string,args ...string)error{cmd:=exec.CommandContext(ctx,path,args...);cmd.Env=[]string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin","LANG=C","LC_ALL=C"};out,err:=cmd.CombinedOutput();if err!=nil{return fmt.Errorf("%s failed (%v): %s",filepath.Base(path),err,strings.TrimSpace(string(out)))};return nil}
+func runInput(ctx context.Context,path string,input []byte,args ...string)error{cmd:=exec.CommandContext(ctx,path,args...);cmd.Env=[]string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin","LANG=C","LC_ALL=C"};cmd.Stdin=bytes.NewReader(input);out,err:=cmd.CombinedOutput();if err!=nil{return fmt.Errorf("%s failed (%v): %s",filepath.Base(path),err,strings.TrimSpace(string(out)))};return nil}
 func guestMAC(id string)string{h:=sha256.Sum256([]byte(id));return fmt.Sprintf("02:fc:%02x:%02x:%02x:%02x",h[0],h[1],h[2],h[3])}
 
