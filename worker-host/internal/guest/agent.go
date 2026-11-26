@@ -53,7 +53,7 @@ func VerifyEnvelope(raw []byte,publicKey ed25519.PublicKey,now time.Time)(Verifi
 	if len(raw)==0||len(raw)>64*1024{return VerifiedBootstrap{},errors.New("bootstrap envelope size is invalid")}
 	var env Envelope
 	dec:=json.NewDecoder(bytes.NewReader(raw));dec.DisallowUnknownFields()
-	if err:=dec.Decode(&env);err!=nil{return VerifiedBootstrap{},errors.New("bootstrap envelope is malformed")}
+	if err:=dec.Decode(&env);err!=nil{return VerifiedBootstrap{},errors.New("bootstrap envelope is malformed")};var trailing any;if err:=dec.Decode(&trailing);err!=io.EOF{return VerifiedBootstrap{},errors.New("bootstrap envelope contains trailing data")}
 	if len(publicKey)!=ed25519.PublicKeySize{return VerifiedBootstrap{},errors.New("pinned host-agent public key is invalid")}
 	sig,err:=base64.StdEncoding.DecodeString(env.Signature);if err!=nil||len(sig)!=ed25519.SignatureSize{return VerifiedBootstrap{},errors.New("bootstrap signature encoding is invalid")}
 	canonical,err:=canonicalJSON(env.Payload);if err!=nil||!ed25519.Verify(publicKey,canonical,sig){return VerifiedBootstrap{},errors.New("bootstrap signature verification failed")}
