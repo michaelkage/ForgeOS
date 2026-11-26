@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { request as httpsRequest, Agent } from "node:https";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import type { IncomingMessage } from "node:http";
+import type { ClientRequest, IncomingMessage } from "node:http";
 import { config } from "./config.js";
 import {
   createArtifactDownloadUrl,
@@ -40,7 +40,7 @@ function requiredSignerConfig() {
     certPath: SIGNING_SERVICE_CLIENT_CERT, keyPath: SIGNING_SERVICE_CLIENT_KEY, caPath: SIGNING_SERVICE_CA };
 }
 
-function responsePromise(request: ReturnType<typeof httpsRequest>): Promise<IncomingMessage> {
+function responsePromise(request: ClientRequest): Promise<IncomingMessage> {
   return new Promise((resolve, reject) => {
     request.once("response", resolve);
     request.once("error", reject);
