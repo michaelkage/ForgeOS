@@ -9,7 +9,7 @@ This directory contains two independently built Linux Go binaries:
 
 Use a dedicated Linux host with KVM, cgroup v2, Firecracker and its matching jailer, cryptsetup with LUKS2, ext4 tools, iproute2, nftables, ACL tools, and a kernel with AF_VSOCK support.
 
-The host agent runs as root because it provisions cgroups, network namespaces, TAP/veth devices, encrypted block storage, and Firecracker jailer processes. It must be a dedicated service, not part of the Node API process.
+The host agent runs as root because it provisions cgroups, network namespaces, TAP/veth devices, encrypted block storage, and Firecracker jailer processes. It must be a dedicated service, not part of the Node API process. Disable host swap, kernel same-page merging (KSM), and simultaneous multithreading (SMT) before admitting untrusted tenants. Keep the host kernel, microcode, and Firecracker release patched. The runtime refuses to launch when swap, KSM, or SMT are active.
 
 Configure a delegated cgroup v2 subtree for VM children. The host-agent process itself must live outside the cgroup parent configured in the JSON file; that parent must be empty of processes and have cpu, memory, pids, and io controllers available. The service manager must delegate those controllers.
 
@@ -64,11 +64,11 @@ The rootfs image is the Firecracker root drive. A second ext4 workspace image is
 
 The host API is HTTPS-only at the transport layer and uses TLS 1.3 plus a dedicated bearer token. It signs provisioning attestations, state observations, and termination acknowledgements with Ed25519.
 
-Each VM receives a dedicated cgroup v2 group with memory.max, memory.swap.max=0, memory.oom.group=1, cpu.max, pids.max, and io.max. The jailer starts Firecracker under a non-root per-instance UID/GID, a dedicated PID namespace, and a dedicated network namespace.
+Each VM receives a dedicated cgroup v2 group with memory.max (guest RAM plus bounded VMM overhead), memory.swap.max=0, memory.oom.group=1, cpu.max, pids.max, and io.max. The host continuously moves matching kvm-pit kernel timer threads into the VM cgroup; provisioning evidence fails if the VMM is outside its cgroup, and a timer-thread placement failure tears down active VMs. The jailer starts Firecracker under a non-root per-instance UID/GID, a dedicated PID namespace, and a dedicated network namespace.
 
 The VM rootfs, kernel, and workspace images live inside a fixed-size LUKS2-encrypted ephemeral volume. Egress is default-deny. Only reviewed public IPv4 CIDRs on TCP/443 and configured public DNS resolver IPs on UDP/TCP 53 are permitted. Private, loopback, link-local, multicast, and metadata destinations are rejected. Host input from the VM veth is dropped.
 
-The host waits for the guest to verify the signed bootstrap, redeem its one-use credential, verify the immutable job snapshot digest, apply its guest pids limit, and mount the encrypted workspace before attesting provisioning.
+The host waits for the guest to verify the signed bootstrap, redeem its one-use credential, verify the immutable job snapshot digest, apply its guest pids limit, and mount the encrypted workspace before attesting provisioning. Firecracker default seccomp filters remain enabled; the guest serial UART is disabled and host stdout/stderr are discarded to avoid guest-controlled unbounded log output.
 
 Teardown first kills the VM cgroup. It refuses to detach network or disk resources while any cgroup process remains. It then removes nftables rules, veth/network namespace, KVM ACL, unmounts encrypted storage, closes the LUKS mapper, and removes the cgroup. The state API only reports stopped after the runtime cleanup succeeds. A one-second expiry reaper enforces wall-clock deadlines; startup recovery destroys all previous instances rather than resuming them.
 
