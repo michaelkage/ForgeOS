@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
@@ -95,8 +97,9 @@ func ParseSnapshot(raw []byte, expected string) (Snapshot,error) {
 	if s.SchemaVersion!=1{return s,errors.New("unsupported build snapshot schema")}
 	if s.Configuration.ID==""||s.Device.ID==""||!codenamePattern.MatchString(s.Device.Codename){return s,errors.New("snapshot device or configuration identity is invalid")}
 	if s.Configuration.ROMBase!="lineage"&&s.Configuration.ROMBase!="crdroid"{return s,errors.New("unsupported ROM base")}
-	if !branchPattern.MatchString(s.Configuration.ManifestRevision){return s,errors.New("manifest revision must be an explicit valid branch or tag")}
-	if !branchPattern.MatchString(s.Manifest.Branch){return s,errors.New("device manifest branch is invalid")}
+	if s.Configuration.ManifestRevision==""{s.Configuration.ManifestRevision=s.Manifest.Branch}
+	if !validGitRef(s.Configuration.ManifestRevision){return s,errors.New("manifest revision must be an explicit valid branch or tag")}
+	if !validGitRef(s.Manifest.Branch){return s,errors.New("device manifest branch is invalid")}
 	if s.Configuration.RootMethod!="none"{return s,fmt.Errorf("root method %q is not supported by this build-worker release",s.Configuration.RootMethod)}
 	if s.Configuration.Options.IncludeGapps||s.Configuration.Options.IncludeMicroG||len(s.Configuration.Options.DebloatPackages)>0{return s,errors.New("GApps, microG, and debloat options are not supported by this build-worker release")}
 	for name,enabled:=range s.Configuration.Options.FeatureFlags{if enabled{return s,fmt.Errorf("feature flag %q is not supported by this build-worker release",name)}}
@@ -105,7 +108,23 @@ func ParseSnapshot(raw []byte, expected string) (Snapshot,error) {
 	if s.Manifest.Path!=expectedManifest||s.Manifest.Branch==""||len(s.Manifest.Content)==0||len(s.Manifest.Content)>2*1024*1024{return s,errors.New("manifest snapshot does not match the selected ROM base or size policy")}
 	manifestHash:=sha256.Sum256([]byte(s.Manifest.Content));if hex.EncodeToString(manifestHash[:])!=s.Manifest.SHA256{return s,errors.New("embedded manifest content digest mismatch")}
 	if len(s.SourceInputs)>100{return s,errors.New("too many pinned source inputs")}
-	for _,src:=range append([]struct{SourceKind string `json:"sourceKind"`; ROMBase *string `json:"romBase"`; RepositoryURL string `json:"repositoryUrl"`; Branch string `json:"branch"`; SourcePath string `json:"sourcePath"`; CommitSHA string `json:"commitSha"`}{},s.SourceInputs...){if !commitPattern.MatchString(src.CommitSHA)||src.RepositoryURL==""||!strings.HasPrefix(src.RepositoryURL,"https://github.com/"){return s,errors.New("pinned source identity is invalid")}}
-	if !commitPattern.MatchString(s.DeviceTree.CommitSHA)||!strings.HasPrefix(s.DeviceTree.RepositoryURL,"https://github.com/"){return s,errors.New("device tree source identity is invalid")}
+	for _,src:=range s.SourceInputs{if !commitPattern.MatchString(src.CommitSHA)||!validGitHubURL(src.RepositoryURL)||!validGitRef(src.Branch)||!safeRelativePath(src.SourcePath){return s,errors.New("pinned source identity is invalid")}}
+	if !commitPattern.MatchString(s.DeviceTree.CommitSHA)||!validGitHubURL(s.DeviceTree.RepositoryURL)||!validGitRef(s.DeviceTree.Branch)||!safeRelativePath(s.DeviceTree.SourcePath){return s,errors.New("device tree source identity is invalid")}
 	return s,nil
+}
+
+func validGitRef(value string)bool{
+	if !branchPattern.MatchString(value)||strings.Contains(value,"..")||strings.Contains(value,"//")||strings.Contains(value,"@{")||strings.HasSuffix(value,"/")||strings.HasSuffix(value,"."){return false}
+	for _,part:=range strings.Split(value,"/"){if strings.HasSuffix(part,".lock"){return false}}
+	return true
+}
+func safeRelativePath(value string)bool{
+	if value==""{return true}
+	if strings.HasPrefix(value,"/")||strings.Contains(value,"\\")||path.Clean(value)!=value||value=="."||value==".."||strings.HasPrefix(value,"../"){return false}
+	return true
+}
+func validGitHubURL(value string)bool{
+	u,err:=url.Parse(value);if err!=nil||u.Scheme!="https"||u.Host!="github.com"||u.User!=nil||u.RawQuery!=""||u.Fragment!=""{return false}
+	parts:=strings.Split(strings.Trim(u.Path,"/"),"/")
+	return len(parts)==2&&parts[0]!=""&&parts[1]!=""&&!strings.Contains(parts[1],"..")
 }
