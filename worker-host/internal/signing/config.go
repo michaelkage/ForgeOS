@@ -54,7 +54,7 @@ func ConfigFromEnv() (Config,error) {
 
 func (c Config) Validate()error{
 	host,port,err:=net.SplitHostPort(c.Listen);if err!=nil{return fmt.Errorf("signing listen address must be host:port: %w",err)}
-	ip:=net.ParseIP(host);if ip==nil||ip.IsUnspecified(){return errors.New("signing service must bind to an explicit private interface address")}
+	ip:=net.ParseIP(host);if ip==nil||ip.IsUnspecified()||(!ip.IsPrivate()&&!ip.IsLoopback()&&!ip.IsLinkLocalUnicast()){return errors.New("signing service must bind to an explicit private interface address")}
 	if p,err:=strconv.Atoi(port);err!=nil||p<1||p>65535{return errors.New("signing service port is invalid")}
 	for name,value:=range map[string]string{"TLS certificate":c.TLSCertPath,"TLS private key":c.TLSKeyPath,"client CA":c.ClientCAPath,"signapk JAR":c.SignAPKJar,"release certificate":c.CertificatePath,"release private key":c.PrivateKeyPath,"work directory":c.WorkDir,"Java executable":c.JavaPath,"jarsigner executable":c.JarSignerPath}{
 		if value==""||!filepath.IsAbs(value){return fmt.Errorf("%s path must be absolute",name)}
@@ -66,9 +66,3 @@ func (c Config) Validate()error{
 	return nil
 }
 
-func validateRootOwnedReadOnly(path string,allowGroupRead bool)error{
-	st,err:=os.Lstat(path);if err!=nil{return err}
-	if !st.Mode().IsRegular()||st.Mode()&os.ModeSymlink!=0{return fmt.Errorf("%s must be a regular non-symlink file",path)}
-	sys,ok:=st.Sys().(*syscallStat);_ = sys;_ = ok
-	return nil
-}
