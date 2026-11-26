@@ -206,7 +206,7 @@ func validateRequest(r ProvisionRequest) error {
 	if r.Architecture!="x86_64"&&r.Architecture!="arm64"{return errors.New("unsupported architecture")};if r.WorkerID!=""&&!workerPattern.MatchString(r.WorkerID){return errors.New("invalid worker identity")}
 	if r.ROMBase!="lineage"&&r.ROMBase!="crdroid"{return errors.New("unsupported ROM base")}
 	if !digestPattern.MatchString(r.ImageDigest)||!workerPattern.MatchString(r.EgressPolicyID){return errors.New("invalid image or egress policy")}
-	if len(r.BootstrapCredential)<40||len(r.BootstrapCredential)>128{return errors.New("invalid bootstrap credential")}
+	if !bootstrapCredentialPattern.MatchString(r.BootstrapCredential){return errors.New("invalid bootstrap credential")}
 	bounds:=[][3]int{{r.Resources.CPUCores,2,128},{r.Resources.MemoryMiB,4096,1048576},{r.Resources.DiskGiB,100,4096},{r.Resources.ProcessLimit,128,65536},{r.Resources.WallTimeSeconds,60,172800}}
 	for _,b:=range bounds{if b[0]<b[1]||b[0]>b[2]{return errors.New("resource request outside safe bounds")}}
 	return nil
