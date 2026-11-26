@@ -2,10 +2,10 @@ package agent
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -73,5 +73,4 @@ func TestSchedulerClaimsBuildsAndConfirmsTeardown(t *testing.T){
 	if rt.provisions!=1{t.Fatalf("expected one VM provision, got %d",rt.provisions)}
 	if len(rt.states)!=1{t.Fatalf("expected one VM state, got %d",len(rt.states))}
 	for id,state:=range rt.states{if state!="stopped"{t.Fatalf("VM %s was not torn down: %s",id,state)}}
-	_ = fmt.Sprintf("%s",jobID)
 }
