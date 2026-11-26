@@ -12,3 +12,6 @@ CREATE TABLE IF NOT EXISTS forgeos_guest_bootstrap_credentials (
 
 CREATE INDEX IF NOT EXISTS forgeos_guest_bootstrap_credentials_expiry_idx
   ON forgeos_guest_bootstrap_credentials(expires_at);
+
+ALTER TABLE forgeos_guest_bootstrap_credentials
+  ADD COLUMN IF NOT EXISTS redeemed_at timestamptz;
