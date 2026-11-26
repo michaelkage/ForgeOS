@@ -4,6 +4,7 @@ package agent
 
 import (
 	"bytes"
+	"bufio"
 	"crypto/rand"
 	"crypto/ed25519"
 	"context"
@@ -393,6 +394,8 @@ func (r *LinuxRuntime) sendBootstrap(m runtimeMeta,req ProvisionRequest)error{
 		if err==nil{
 			_ = conn.SetDeadline(time.Now().Add(5*time.Second))
 			if _,err=fmt.Fprintf(conn,"CONNECT %d\n",r.cfg.VsockPort);err==nil{
+				line,readErr:=bufio.NewReader(conn).ReadString('\n')
+				if readErr!=nil||!strings.HasPrefix(line,"OK"){_ = conn.Close();time.Sleep(250*time.Millisecond);continue}
 				var hdr [4]byte;hdr[0]=byte(len(data)>>24);hdr[1]=byte(len(data)>>16);hdr[2]=byte(len(data)>>8);hdr[3]=byte(len(data))
 				_,err=conn.Write(append(hdr[:],data...))
 			}
