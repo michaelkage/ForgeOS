@@ -112,8 +112,12 @@ func Run(ctx context.Context,cfg Config)error{
 	if "sha256:"+hex.EncodeToString(sum[:])!=job.SnapshotSHA256{return errors.New("immutable build snapshot digest mismatch")}
 	if _,err:=conn.Write([]byte("BOOTSTRAP_REDEEMED\n"));err!=nil{return errors.New("unable to acknowledge redeemed guest bootstrap")}
 	_ = conn.Close()
+	if err:=os.MkdirAll("/workspace",0700);err!=nil{return err}
+	mount:=exec.Command("mount","-t","ext4","/dev/vdb","/workspace");mount.Stdout=io.Discard;mount.Stderr=io.Discard
+	if err:=mount.Run();err!=nil{return errors.New("encrypted guest workspace disk could not be mounted")}
 	workspace:="/workspace/forgeos"
 	if err:=os.MkdirAll(workspace,0700);err!=nil{return err}
+	artifactRel,relErr:=filepath.Rel("/workspace",cfg.ArtifactPath);if relErr!=nil||artifactRel==".."||strings.HasPrefix(artifactRel,".."+string(os.PathSeparator)){return errors.New("artifact output must be stored on the encrypted workspace disk")}
 	snapshotPath:=filepath.Join(workspace,"snapshot.json")
 	if err:=os.WriteFile(snapshotPath,snapshot,0600);err!=nil{return err}
 	runCtx,cancel:=context.WithCancel(ctx);defer cancel()
@@ -187,7 +191,7 @@ func workerIDValid(s string)bool{return len(s)>=3&&len(s)<=64&&regexp.MustCompil
 func trustedExecutable(path string)error{st,err:=os.Lstat(path);if err!=nil{return err};sys,ok:=st.Sys().(*syscall.Stat_t);if !st.Mode().IsRegular()||st.Mode()&os.ModeSymlink!=0||st.Mode().Perm()&0022!=0||!ok||sys.Uid!=0{return errors.New("build worker executable must be a root-owned, non-writable regular file")};return nil}
 func readEd25519PublicKey(path string)(ed25519.PublicKey,error){
 	b,err:=os.ReadFile(path);if err!=nil{return nil,err}
-	block,_:=pem.Decode(b);if block==nil{return nil,errors.New("host public key PEM is invalid")}
+	st,statErr:=os.Lstat(path);if statErr!=nil{return nil,statErr};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok||sys.Uid!=0||st.Mode()&0022!=0||st.Mode()&os.ModeSymlink!=0{return nil,errors.New("host public key must be root-owned and not writable by group or others")};block,_:=pem.Decode(b);if block==nil{return nil,errors.New("host public key PEM is invalid")}
 	key,err:=x509.ParsePKIXPublicKey(block.Bytes);if err!=nil{return nil,err}
 	pub,ok:=key.(ed25519.PublicKey);if !ok{return nil,errors.New("pinned host public key must be Ed25519")}
 	return pub,nil
