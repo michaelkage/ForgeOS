@@ -76,9 +76,15 @@ export async function registerGuestBootstrapRoutes(app: FastifyInstance): Promis
                credential_sha256=EXCLUDED.credential_sha256,
                expires_at=EXCLUDED.expires_at,
                created_at=now()
+         WHERE forgeos_guest_bootstrap_credentials.redeemed_at IS NULL
+           AND forgeos_guest_bootstrap_credentials.expires_at <= now()
          RETURNING expires_at`,
         [jobId, attempt, workerId, generated.sha256]
       );
+      if (!inserted.rowCount) {
+        await client.query("ROLLBACK");
+        return reply.code(409).send({ error: "guest_bootstrap_credential_unavailable" });
+      }
       await client.query("COMMIT");
       return reply.code(201).send({
         credential: generated.credential,
@@ -95,8 +101,8 @@ export async function registerGuestBootstrapRoutes(app: FastifyInstance): Promis
     }
   });
 
-  // The guest presents the credential as a bearer token. Redemption atomically
-  // deletes it, so concurrent/replayed requests can produce at most one success.
+  // The guest presents the credential as a bearer token. Redemption atomically marks
+  // it consumed, so neither concurrent requests nor later re-issuance can reuse it.
   app.post("/api/internal/guest-bootstrap/redeem", {
     config: { rateLimit: { max: 10, timeWindow: "1 minute" } }
   }, async (request, reply) => {
@@ -110,8 +116,8 @@ export async function registerGuestBootstrapRoutes(app: FastifyInstance): Promis
     try {
       await client.query("BEGIN");
       const consumed = await client.query<{ build_job_id: string; attempt: number; worker_id: string }>(
-        `DELETE FROM forgeos_guest_bootstrap_credentials
-         WHERE credential_sha256=$1 AND expires_at > now()
+        `UPDATE forgeos_guest_bootstrap_credentials SET redeemed_at=now()
+         WHERE credential_sha256=$1 AND expires_at > now() AND redeemed_at IS NULL
          RETURNING build_job_id,attempt,worker_id`,
         [digest]
       );
