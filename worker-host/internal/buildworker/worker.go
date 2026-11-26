@@ -3,8 +3,6 @@ package buildworker
 import (
 	"archive/zip"
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"context"
 	"errors"
