@@ -29,11 +29,11 @@ export const buildArtifactSchema = z.object({
     sizeBytes: z.number().int().positive().max(20 * 1024 * 1024 * 1024),
     contentType: z.literal("application/zip")
 }).strict();
-const sourceLockfileSchema = z.object({
+export const sourceLockfileSchema = z.object({
   schemaVersion: z.literal(1),
   projects: z.array(z.object({
-    path: z.string().min(1).max(512).refine(value => !value.startsWith("/") && !value.includes("\\\\") && !value.split("/").some(part => part === "." || part === "..")),
-    name: z.string().min(1).max(512),
+    path: z.string().min(1).max(512).refine(value => !value.startsWith("/") && !/[\\x00-\\x1f\\x7f\\\\]/.test(value) && value.split("/").every(part => part.length > 0 && part !== "." && part !== "..")),
+    name: z.string().min(1).max(512).refine(value => !/[\\x00-\\x1f\\x7f]/.test(value)),
     revision: z.string().regex(/^[a-f0-9]{40}$/)
   }).strict()).min(1).max(2000)
 }).strict().superRefine((lockfile, ctx) => {
