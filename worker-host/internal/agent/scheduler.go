@@ -111,7 +111,7 @@ func (s *Scheduler) runJob(ctx context.Context,job claimedJob){
 	if !contains(s.cfg.Architectures,architecture)||!contains(s.cfg.ROMBases,romBase){fail("worker_capability_mismatch","The claimed job does not match this worker's capabilities.");return}
 	credential,err:=s.issueCredential(ctx,job)
 	if err!=nil{fail("guest_credential_issue_failed","The one-time guest bootstrap credential could not be issued.");return}
-	if credential.JobID!=job.ID||credential.Attempt!=job.Attempts||!credentialRE.MatchString(credential.Credential)||!credential.ExpiresAt.After(time.Now()){fail("guest_credential_invalid","The platform returned an invalid guest bootstrap credential.");return}
+	if credential.JobID!=job.ID||credential.Attempt!=job.Attempts||!bootstrapCredentialPattern.MatchString(credential.Credential)||!credential.ExpiresAt.After(time.Now()){fail("guest_credential_invalid","The platform returned an invalid guest bootstrap credential.");return}
 	requestID,err:=randomUUID();if err!=nil{fail("host_request_id_failed","The host could not create a provisioning request ID.");return}
 	req:=ProvisionRequest{RequestID:requestID,WorkerID:s.cfg.WorkerID,JobID:job.ID,Attempt:job.Attempts,Architecture:architecture,ROMBase:romBase,ImageDigest:s.cfg.ImageDigests[architecture],Resources:s.cfg.Resources,EgressPolicyID:s.cfg.EgressPolicyID,BootstrapCredential:credential.Credential}
 	instance,err:=s.server.ProvisionLocal(req)
