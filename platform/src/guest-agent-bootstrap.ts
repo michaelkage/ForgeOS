@@ -3,6 +3,7 @@ import { verify as verifySignature } from "node:crypto";
 export interface GuestBootstrapPayload {
   schemaVersion: 1;
   jobId: string;
+  workerId: string;
   attempt: number;
   architecture: "x86_64" | "arm64";
   imageDigest: string;
@@ -21,6 +22,7 @@ export interface GuestBootstrapEnvelope {
 
 export interface VerifiedGuestBootstrap {
   jobId: string;
+  workerId: string;
   attempt: number;
   architecture: "x86_64" | "arm64";
   imageDigest: string;
@@ -75,6 +77,7 @@ export function verifyGuestBootstrap(
     throw new Error("Guest bootstrap signature verification failed");
   }
   if (payload.schemaVersion !== 1 || !validUuid(payload.jobId) ||
+      typeof payload.workerId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(payload.workerId) ||
       !Number.isSafeInteger(payload.attempt) || payload.attempt < 1 || payload.attempt > 20 ||
       (payload.architecture !== "x86_64" && payload.architecture !== "arm64") ||
       !/^sha256:[a-f0-9]{64}$/.test(payload.imageDigest) || !isRecord(payload.resources) ||
@@ -113,6 +116,7 @@ export function verifyGuestBootstrap(
   }
   return {
     jobId: payload.jobId,
+    workerId: payload.workerId,
     attempt: payload.attempt,
     architecture: payload.architecture,
     imageDigest: payload.imageDigest,
