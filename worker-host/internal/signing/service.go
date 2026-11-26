@@ -55,7 +55,7 @@ func(s *Service) TLSConfig()(*tls.Config,error){
 	return &tls.Config{MinVersion:tls.VersionTLS13,Certificates:[]tls.Certificate{cert},ClientAuth:tls.RequireAndVerifyClientCert,ClientCAs:pool},nil
 }
 func(s *Service) Handler()http.Handler{return securityHeaders(s.mux)}
-func(s *Service) Serve()error{
+func(s *Service) Serve(ctx context.Context)error{
 	tlsConfig,err:=s.TLSConfig();if err!=nil{return err}
 	listener,err:=net.Listen("tcp",s.cfg.Listen);if err!=nil{return err}
 	tlsListener:=tls.NewListener(listener,tlsConfig)
