@@ -30,7 +30,7 @@ var shaPattern=regexp.MustCompile(`^[a-f0-9]{64}$`)
 type Service struct { cfg Config; ledger *ledger; mux *http.ServeMux }
 func NewService(cfg Config)(*Service,error){
 	if err:=cfg.Validate();err!=nil{return nil,err}
-	for _,p:=range []string{cfg.TLSCertPath,cfg.TLSKeyPath,cfg.ClientCAPath,cfg.SignAPKJar,cfg.CertificatePath,cfg.PrivateKeyPath,cfg.JavaPath,cfg.JarSignerPath}{if err:=verifyProtectedFile(p,p==cfg.PrivateKeyPath||p==cfg.TLSKeyPath);err!=nil{return nil,fmt.Errorf("verify signing dependency %s: %w",p,err)}}
+	for _,p:=range []string{cfg.TLSCertPath,cfg.TLSKeyPath,cfg.ClientCAPath,cfg.SignAPKJar,cfg.CertificatePath,cfg.PrivateKeyPath,cfg.JavaPath,cfg.JarSignerPath}{if err:=verifyProtectedFile(p,p==cfg.PrivateKeyPath||p==cfg.TLSKeyPath,p==cfg.JavaPath||p==cfg.JarSignerPath);err!=nil{return nil,fmt.Errorf("verify signing dependency %s: %w",p,err)}}
 	if err:=os.MkdirAll(cfg.WorkDir,0700);err!=nil{return nil,err}
 	st,err:=os.Stat(cfg.WorkDir);if err!=nil{return nil,err};if !st.IsDir()||st.Mode().Perm()&0077!=0{return nil,errors.New("signing work directory must be a directory inaccessible to other users")}
 	l,err:=openLedger(filepath.Join(cfg.WorkDir,"signing-ledger.jsonl"));if err!=nil{return nil,err}
@@ -39,12 +39,13 @@ func NewService(cfg Config)(*Service,error){
 	s.mux.HandleFunc("POST /v1/sign",s.sign)
 	return s,nil
 }
-func verifyProtectedFile(file string,private bool)error{
+func verifyProtectedFile(file string,private,executable bool)error{
 	st,err:=os.Lstat(file);if err!=nil{return err}
 	if !st.Mode().IsRegular()||st.Mode()&os.ModeSymlink!=0{return errors.New("must be a regular non-symlink file")}
 	sys,ok:=st.Sys().(*syscall.Stat_t);if !ok||sys.Uid!=0{return errors.New("must be owned by root")}
 	if st.Mode().Perm()&0022!=0{return errors.New("must not be group- or world-writable")}
 	if private&&st.Mode().Perm()&0007!=0{return errors.New("private key must not be accessible to other users")}
+	if executable&&st.Mode().Perm()&0111==0{return errors.New("required signing tool is not executable")}
 	return nil
 }
 func(s *Service) TLSConfig()(*tls.Config,error){
