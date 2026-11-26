@@ -59,7 +59,7 @@ func TestHostAgentRejectsMissingServiceCredential(t *testing.T){
 func base64Decode(s string)([]byte,error){return base64.StdEncoding.DecodeString(s)}
 var _=time.Second
 
-func localProvisionRequest()ProvisionRequest{return ProvisionRequest{RequestID:"123e4567-e89b-42d3-a456-426614174101",JobID:"123e4567-e89b-42d3-a456-426614174100",WorkerID:"worker-host-1",Attempt:1,Architecture:"x86_64",ROMBase:"lineage",ImageDigest:"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",Resources:Resources{CPUCores:2,MemoryMiB:4096,DiskGiB:64,ProcessLimit:512,WallTimeSeconds:600},EgressPolicyID:"test-egress",BootstrapCredential:"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}
+func localProvisionRequest()ProvisionRequest{return ProvisionRequest{RequestID:"123e4567-e89b-42d3-a456-426614174101",JobID:"123e4567-e89b-42d3-a456-426614174100",WorkerID:"worker-host-1",Attempt:1,Architecture:"x86_64",ROMBase:"lineage",ImageDigest:"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",Resources:Resources{CPUCores:2,MemoryMiB:4096,DiskGiB:128,ProcessLimit:512,WallTimeSeconds:600},EgressPolicyID:"test-egress",BootstrapCredential:"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}
 
 func TestTerminateLocalRemovesPersistedInstanceAndRequest(t *testing.T){
 	_,priv,err:=ed25519.GenerateKey(rand.Reader);if err!=nil{t.Fatal(err)}
