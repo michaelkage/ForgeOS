@@ -25,7 +25,6 @@ import (
 )
 
 var uuidPattern=regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-var shaPattern=regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 type Service struct { cfg Config; ledger *ledger; mux *http.ServeMux; slots chan struct{} }
 func NewService(cfg Config)(*Service,error){
