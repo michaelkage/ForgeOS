@@ -422,11 +422,14 @@ func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 		}
 		deadline:=time.Now().Add(15*time.Second)
 		for time.Now().Before(deadline){b,e:=os.ReadFile(cgroupProcs);if e!=nil||len(bytes.TrimSpace(b))==0{break};time.Sleep(100*time.Millisecond)}
-		remainingBytes,remainingErr:=os.ReadFile(cgroupProcs);if remainingErr==nil&&len(bytes.TrimSpace(remainingBytes))>0{
-		for _,raw:=range strings.Fields(string(remainingBytes)){pid,_:=strconv.Atoi(raw);if pid>1{_ = syscall.Kill(pid,syscall.SIGKILL)}}
-		deadline=time.Now().Add(5*time.Second);for time.Now().Before(deadline){remainingBytes,remainingErr=os.ReadFile(cgroupProcs);if remainingErr!=nil||len(bytes.TrimSpace(remainingBytes))==0{break};time.Sleep(50*time.Millisecond)}
-		remainingBytes,remainingErr=os.ReadFile(cgroupProcs);if remainingErr==nil&&len(bytes.TrimSpace(remainingBytes))>0{return errors.New("Firecracker processes remain; refusing to detach their resources")}
-	}
+		if err:=func()error{
+			remaining,readErr:=os.ReadFile(cgroupProcs);if readErr!=nil||len(bytes.TrimSpace(remaining))==0{return nil}
+			for _,raw:=range strings.Fields(string(remaining)){pid,_:=strconv.Atoi(raw);if pid>1{_ = syscall.Kill(pid,syscall.SIGKILL)}}
+			deadline:=time.Now().Add(5*time.Second)
+			for time.Now().Before(deadline){remaining,readErr=os.ReadFile(cgroupProcs);if readErr!=nil||len(bytes.TrimSpace(remaining))==0{break};time.Sleep(50*time.Millisecond)}
+			remaining,readErr=os.ReadFile(cgroupProcs);if readErr==nil&&len(bytes.TrimSpace(remaining))>0{return errors.New("Firecracker processes remain; refusing to detach their resources")}
+			return nil
+		}();err!=nil{return err}
 	}
 	if m.FirecrackerPID>1&&r.processMatchesInstance(m,m.FirecrackerPID){
 		_ = syscall.Kill(m.FirecrackerPID,syscall.SIGKILL)
