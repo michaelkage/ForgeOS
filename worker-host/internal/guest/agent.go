@@ -134,10 +134,11 @@ func Run(ctx context.Context,cfg Config)error{
 	cmd.Dir=workspace
 	cmd.Env=[]string{"PATH=/usr/local/bin:/usr/bin:/bin","HOME="+workspace,"TMPDIR=/tmp","FORGEOS_JOB_ID="+job.JobID,"FORGEOS_JOB_ATTEMPT="+strconv.Itoa(job.Attempt)}
 	if err:=cmd.Run();err!=nil{
-		cancel()
+		cancel();_ = killGuestWorkerCgroup()
 		_ = reportFailure(context.Background(),verified.API,job,"worker_execution_failed","The isolated build worker exited unsuccessfully.")
 		return powerOffGuest()
 	}
+	if err:=killGuestWorkerCgroup();err!=nil{_ = reportFailure(context.Background(),verified.API,job,"worker_process_cleanup_failed","Guest build worker processes could not be stopped.");return powerOffGuest()}
 	select{case err:=<-heartbeatDone:if err!=nil{_ = reportFailure(context.Background(),verified.API,job,"worker_lease_lost","The build worker lease heartbeat was lost.");return powerOffGuest()};default:}
 	cancel()
 	if err:=uploadArtifact(ctx,verified.API,job,cfg.ArtifactPath);err!=nil{
@@ -151,11 +152,14 @@ func setupGuestProcessCgroup(limit int)error{
 	const root="/sys/fs/cgroup"
 	if !isCgroup2Mounted(){if err:=os.MkdirAll(root,0755);err!=nil{return err};cmd:=exec.Command("mount","-t","cgroup2","none",root);cmd.Stdout=io.Discard;cmd.Stderr=io.Discard;if err:=cmd.Run();err!=nil{return errors.New("guest cgroup v2 mount failed")}}
 	controllers,err:=os.ReadFile(filepath.Join(root,"cgroup.controllers"));if err!=nil||!strings.Contains(" "+string(controllers)+" "," pids "){return errors.New("guest kernel does not expose the cgroup v2 pids controller")}
-	control:=filepath.Join(root,"forgeos-control");worker:=filepath.Join(root,"forgeos-worker")
-	if err:=os.MkdirAll(control,0755);err!=nil{return err}
-	if err:=os.WriteFile(filepath.Join(control,"cgroup.procs"),[]byte(strconv.Itoa(os.Getpid())),0644);err!=nil{return errors.New("unable to move guest agent out of the cgroup root")}
+	worker:=filepath.Join(root,"forgeos-worker")
 	subtree,err:=os.ReadFile(filepath.Join(root,"cgroup.subtree_control"));if err!=nil{return err}
-	if !strings.Contains(" "+string(subtree)+" "," pids "){if err:=os.WriteFile(filepath.Join(root,"cgroup.subtree_control"),[]byte("+pids"),0644);err!=nil{return errors.New("unable to enable guest pids controller")}}
+	if !strings.Contains(" "+string(subtree)+" "," pids "){
+		control:=filepath.Join(root,"forgeos-control")
+		if err:=os.MkdirAll(control,0755);err!=nil{return err}
+		if err:=os.WriteFile(filepath.Join(control,"cgroup.procs"),[]byte(strconv.Itoa(os.Getpid())),0644);err!=nil{return errors.New("unable to move guest agent out of the cgroup root")}
+		if err:=os.WriteFile(filepath.Join(root,"cgroup.subtree_control"),[]byte("+pids"),0644);err!=nil{return errors.New("unable to enable guest pids controller")}
+	}
 	if err:=os.MkdirAll(worker,0755);err!=nil{return err}
 	if err:=os.WriteFile(filepath.Join(worker,"pids.max"),[]byte(strconv.Itoa(limit)),0644);err!=nil{return errors.New("unable to enforce guest process limit")}
 	return nil
@@ -165,6 +169,21 @@ func isCgroup2Mounted()bool{
 	for _,line:=range strings.Split(string(b),"\n"){if strings.Contains(line," - cgroup2 ")&&strings.Contains(line," /sys/fs/cgroup "){return true}}
 	return false
 }
+func killGuestWorkerCgroup()error{
+	const path="/sys/fs/cgroup/forgeos-worker"
+	procs:=filepath.Join(path,"cgroup.procs")
+	if _,err:=os.Stat(procs);err!=nil{return err}
+	if _,err:=os.Stat(filepath.Join(path,"cgroup.kill"));err==nil{
+		if err:=os.WriteFile(filepath.Join(path,"cgroup.kill"),[]byte("1"),0200);err!=nil{return err}
+	}else{
+		b,err:=os.ReadFile(procs);if err!=nil{return err}
+		for _,raw:=range strings.Fields(string(b)){pid,_:=strconv.Atoi(raw);if pid>1{_ = syscall.Kill(pid,syscall.SIGKILL)}}
+	}
+	deadline:=time.Now().Add(5*time.Second)
+	for time.Now().Before(deadline){b,err:=os.ReadFile(procs);if err!=nil{return err};if len(bytes.TrimSpace(b))==0{return nil};time.Sleep(50*time.Millisecond)}
+	return errors.New("guest worker cgroup still contains processes after teardown")
+}
+
 func ExecWorkerChild(cgroupPath,workerPath string,args []string)error{
 	if os.Geteuid()!=0||cgroupPath!="/sys/fs/cgroup/forgeos-worker"{return errors.New("worker child must enter the preconfigured guest cgroup as root")}
 	if err:=trustedExecutable(workerPath);err!=nil{return err}
