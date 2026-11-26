@@ -58,7 +58,7 @@ func run()error{
 		schedulerDone=make(chan struct{})
 		go func(){defer close(schedulerDone);if err:=scheduler.Run(ctx);err!=nil&&ctx.Err()==nil{log.Printf("ForgeOS scheduler stopped: %v",err)}}()
 	}
-	go func(){ticker:=time.NewTicker(time.Second);defer ticker.Stop();for{select{case<-ctx.Done():return;case<-ticker.C:if err:=runtime.SweepExpired();err!=nil{log.Printf("host-agent expiry reaper failed: %v",err)}}}}()
+	go func(){ticker:=time.NewTicker(250*time.Millisecond);defer ticker.Stop();for{select{case<-ctx.Done():return;case<-ticker.C:if err:=runtime.SweepExpired();err!=nil{log.Printf("host-agent expiry reaper failed: %v",err)}}}}()
 	errCh:=make(chan error,1)
 	go func(){errCh<-httpServer.ListenAndServeTLS(cert,key)}()
 	select{
