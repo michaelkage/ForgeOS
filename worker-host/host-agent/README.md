@@ -4,7 +4,7 @@ Install the immutable host-agent binary at `/usr/local/sbin/forgeos-host-agent`,
 
 The host agent must run on a dedicated Linux host with KVM, Firecracker and jailer installed from the same pinned release, cgroup v2, nftables, iproute2, cryptsetup, ext4 tools, ACL tools, and a block-backed filesystem for `StateDir`. Do not run it inside Docker or another container. Disable host swap, KSM, and SMT. Keep host kernel and microcode patched.
 
-The unit uses `Delegate=yes`. Configure `CgroupParent` in the JSON config as `system.slice/forgeos-host-agent.service/instances`. At first provisioning, the agent moves its own service process into a control child, enables cpu/memory/pids/io controllers in the service cgroup, and creates the empty `instances` parent. VM cgroups are children of that parent. Do not put the host agent process itself in the instances cgroup.
+The unit uses `Delegate=yes`. Install the accompanying `forgeos-host.slice` and configure `CgroupParent` in the JSON config as `forgeos-host.slice/forgeos-host-agent.service/instances`. The slice enables CPU, memory, task/pids, and I/O accounting so the service cgroup receives those controllers. At first provisioning, the agent moves its own service process into a control child, enables cpu/memory/pids/io controllers in the service cgroup, and creates the empty `instances` parent. VM cgroups are children of that parent. Do not put the host agent process itself in the instances cgroup.
 
 Recommended host runtime paths:
 - `StateDir=/var/lib/forgeos-host-agent` (mode 0700, on a block-backed filesystem)
