@@ -148,7 +148,7 @@ export async function signUploadedArtifact(input: SignedArtifactRequest): Promis
     );
     if (signed.statusCode !== 200) {
       const detail = await readErrorResponse(signed);
-      const prefix = signed.statusCode >= 400 && signed.statusCode < 500
+      const prefix = signed.statusCode === 422
         ? "artifact_signing_rejected: " : "signing_service_unavailable: ";
       throw new Error(prefix + "signer returned HTTP " + signed.statusCode + (detail ? " (" + detail + ")" : ""));
     }
