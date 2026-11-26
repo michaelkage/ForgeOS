@@ -77,6 +77,9 @@ func securityHeaders(next http.Handler)http.Handler{return http.HandlerFunc(func
 func(s *Service) health(w http.ResponseWriter,r *http.Request){w.Header().Set("Content-Type","application/json");_,_=io.WriteString(w,`{"status":"ok"}`)}
 func(s *Service) authorized(r *http.Request)bool{
 	if r.TLS==nil||len(r.TLS.PeerCertificates)==0{return false}
+	certDigest:=sha256.Sum256(r.TLS.PeerCertificates[0].Raw)
+	expectedCert,err:=hex.DecodeString(s.cfg.ClientCertSHA256)
+	if err!=nil||len(expectedCert)!=sha256.Size||subtle.ConstantTimeCompare(certDigest[:],expectedCert)!=1{return false}
 	header:=r.Header.Get("Authorization");if !strings.HasPrefix(header,"Bearer "){return false}
 	got:=[]byte(strings.TrimPrefix(header,"Bearer "));want:=[]byte(s.cfg.BearerToken)
 	return len(got)==len(want)&&subtle.ConstantTimeCompare(got,want)==1
