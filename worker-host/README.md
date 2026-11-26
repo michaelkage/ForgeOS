@@ -51,7 +51,7 @@ HOST_AGENT_TOKEN is a dedicated random service bearer credential. HOST_AGENT_SIG
 
 ## Guest image requirements
 
-Bake the forgeos-guest-agent binary, the pinned host-agent Ed25519 public key, and a root-owned immutable forgeos-build-worker executable into the approved rootfs image. Configure FORGEOS_HOST_PUBLIC_KEY, FORGEOS_WORKER_ID, FORGEOS_BUILD_WORKER, FORGEOS_ARTIFACT_PATH (inside /workspace/forgeos), and optionally FORGEOS_VSOCK_PORT in the guest image. The worker executable must be root-owned and not writable by group or others.
+Bake the forgeos-guest-agent binary, the pinned host-agent Ed25519 public key, and a root-owned immutable forgeos-build-worker executable into the approved rootfs image. Configure FORGEOS_HOST_PUBLIC_KEY, FORGEOS_BUILD_WORKER, FORGEOS_ARTIFACT_PATH (inside /workspace/forgeos), and optionally FORGEOS_VSOCK_PORT in the guest image. The worker executable must be root-owned and not writable by group or others.
 
 The guest kernel must expose cgroup v2 and its pids controller. The guest agent moves itself into a control cgroup, enables the pids controller, creates a bounded worker cgroup, and starts the build worker through its own privileged launcher. The worker runs as numeric UID/GID 10000 and does not receive the lease token or platform API credentials.
 
