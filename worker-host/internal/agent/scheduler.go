@@ -55,7 +55,7 @@ type schedulerStatusResponse struct { Job schedulerJobStatus `json:"job"` }
 func NewScheduler(server *Server,cfg SchedulerConfig,workerToken string)(*Scheduler,error){
 	if server==nil||len(workerToken)<32{return nil,errors.New("scheduler server and platform worker token are required")}
 	api,err:=url.Parse(cfg.PlatformAPIBaseURL)
-	if err!=nil||api.Scheme!="https"||api.Host==""||api.User!=nil||api.RawQuery!=""||api.Fragment!=""{return nil,errors.New("scheduler platform URL must be credential-free HTTPS")}
+	if err!=nil||api.Scheme!="https"||api.Host==""||api.User!=nil||(api.Path!=""&&api.Path!="/")||api.RawQuery!=""||api.Fragment!=""{return nil,errors.New("scheduler platform URL must be credential-free HTTPS")}
 	if !workerPattern.MatchString(cfg.WorkerID)||!workerPattern.MatchString(cfg.EgressPolicyID){return nil,errors.New("scheduler worker and egress policy IDs are invalid")}
 	if len(cfg.Architectures)==0||len(cfg.Architectures)>2||len(cfg.ROMBases)==0||len(cfg.ROMBases)>2{return nil,errors.New("scheduler capabilities are invalid")}
 	for _,a:=range cfg.Architectures{if a!="x86_64"&&a!="arm64"{return nil,fmt.Errorf("unsupported scheduler architecture %s",a)};if !digestPattern.MatchString(cfg.ImageDigests[a]){return nil,fmt.Errorf("missing pinned worker image digest for %s",a)}}
