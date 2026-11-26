@@ -308,7 +308,7 @@ func (r *LinuxRuntime) launchFirecracker(m runtimeMeta,req ProvisionRequest,kern
 }
 
 func (r *LinuxRuntime) sendBootstrap(m runtimeMeta,req ProvisionRequest)error{
-	nonce,nonceErr:=randomUUID();if nonceErr!=nil{return nonceErr};issued:=time.Now().UTC();payload:=map[string]any{"schemaVersion":1,"jobId":req.JobID,"attempt":req.Attempt,"architecture":req.Architecture,"imageDigest":req.ImageDigest,"apiBaseUrl":r.cfg.BootstrapAPIBaseURL,"bootstrapCredential":req.BootstrapCredential,"nonce":nonce,"issuedAt":issued,"expiresAt":issued.Add(180*time.Second)}
+	nonce,nonceErr:=randomUUID();if nonceErr!=nil{return nonceErr};issued:=time.Now().UTC();payload:=map[string]any{"schemaVersion":1,"jobId":req.JobID,"attempt":req.Attempt,"architecture":req.Architecture,"imageDigest":req.ImageDigest,"resources":req.Resources,"apiBaseUrl":r.cfg.BootstrapAPIBaseURL,"bootstrapCredential":req.BootstrapCredential,"nonce":nonce,"issuedAt":issued,"expiresAt":issued.Add(180*time.Second)}
 	// The guest verifies the Ed25519 signature using the pinned host key embedded in its immutable image.
 	signer,ok:=r.(interface{SignBootstrap(any)(string,error)});if !ok{return errors.New("host runtime bootstrap signer is unavailable")}
 	sig,err:=signer.SignBootstrap(payload);if err!=nil{return err}
