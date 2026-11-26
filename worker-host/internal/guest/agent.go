@@ -110,8 +110,6 @@ func Run(ctx context.Context,cfg Config)error{
 	snapshot,err:=canonicalRaw(job.Snapshot);if err!=nil{return err}
 	sum:=sha256.Sum256(snapshot)
 	if "sha256:"+hex.EncodeToString(sum[:])!=job.SnapshotSHA256{return errors.New("immutable build snapshot digest mismatch")}
-	if _,err:=conn.Write([]byte("BOOTSTRAP_REDEEMED\n"));err!=nil{return errors.New("unable to acknowledge redeemed guest bootstrap")}
-	_ = conn.Close()
 	if err:=os.MkdirAll("/workspace",0700);err!=nil{return err}
 	mount:=exec.Command("mount","-t","ext4","/dev/vdb","/workspace");mount.Stdout=io.Discard;mount.Stderr=io.Discard
 	if err:=mount.Run();err!=nil{return errors.New("encrypted guest workspace disk could not be mounted")}
@@ -120,6 +118,8 @@ func Run(ctx context.Context,cfg Config)error{
 	artifactRel,relErr:=filepath.Rel("/workspace",cfg.ArtifactPath);if relErr!=nil||artifactRel==".."||strings.HasPrefix(artifactRel,".."+string(os.PathSeparator)){return errors.New("artifact output must be stored on the encrypted workspace disk")}
 	snapshotPath:=filepath.Join(workspace,"snapshot.json")
 	if err:=os.WriteFile(snapshotPath,snapshot,0600);err!=nil{return err}
+	if _,err:=conn.Write([]byte("BOOTSTRAP_REDEEMED\n"));err!=nil{return errors.New("unable to acknowledge prepared guest bootstrap")}
+	_ = conn.Close()
 	runCtx,cancel:=context.WithCancel(ctx);defer cancel()
 	heartbeatDone:=make(chan error,1)
 	go heartbeatLoop(runCtx,verified.API,job,cancel,heartbeatDone)
