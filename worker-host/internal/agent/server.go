@@ -252,5 +252,18 @@ func (s *Server) TerminateLocal(instanceID string)error{
 	if err:=s.cfg.Runtime.Terminate(instanceID);err!=nil{return err}
 	state,err:=s.cfg.Runtime.Inspect(instanceID);if err!=nil{return err}
 	if state!="stopped"{return fmt.Errorf("worker teardown not independently confirmed; runtime state is %s",state)}
-	return nil
+	s.mu.Lock();defer s.mu.Unlock()
+	delete(s.instances,instanceID)
+	for requestID,storedID:=range s.requests{if storedID==instanceID{delete(s.requests,requestID)}}
+	return s.saveState()
+}
+func (s *Server) ReconcileRecoveredInstances()error{
+	s.mu.Lock();defer s.mu.Unlock()
+	for instanceID:=range s.instances{
+		state,err:=s.cfg.Runtime.Inspect(instanceID);if err!=nil{return fmt.Errorf("inspect recovered instance %s: %w",instanceID,err)}
+		if state!="stopped"{if err:=s.cfg.Runtime.Terminate(instanceID);err!=nil{return fmt.Errorf("terminate recovered instance %s: %w",instanceID,err)};state,err=s.cfg.Runtime.Inspect(instanceID);if err!=nil||state!="stopped"{return fmt.Errorf("recovered instance %s teardown is not confirmed",instanceID)}}
+		delete(s.instances,instanceID)
+		for requestID,storedID:=range s.requests{if storedID==instanceID{delete(s.requests,requestID)}}
+	}
+	return s.saveState()
 }
