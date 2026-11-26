@@ -33,8 +33,7 @@ var digestRE=regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 type BootstrapPayload struct {
 	SchemaVersion int `json:"schemaVersion"`
-	JobID string `json:"jobId"`
-	WorkerID string `json:"workerId"`
+	JobID string `json:"jobId"` `json:"workerId"`
 	Attempt int `json:"attempt"`
 	Architecture string `json:"architecture"`
 	ImageDigest string `json:"imageDigest"`
@@ -94,7 +93,6 @@ type Config struct {
 	VsockPort uint32
 }
 func Run(ctx context.Context,cfg Config)error{
-	if !workerIDValid(cfg.WorkerID){return errors.New("guest worker identity is invalid")}
 	if !filepath.IsAbs(cfg.WorkerPath)||!filepath.IsAbs(cfg.ArtifactPath){return errors.New("guest worker and artifact paths must be absolute")}
 	if err:=trustedExecutable(cfg.WorkerPath);err!=nil{return err}
 	pub,err:=readEd25519PublicKey(cfg.PublicKeyPath);if err!=nil{return err}
