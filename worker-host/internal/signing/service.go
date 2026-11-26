@@ -139,7 +139,7 @@ func verifyOTA(file string,requireSignature bool)error{
 	if len(zr.File)==0||len(zr.File)>200000{return errors.New("OTA ZIP entry count outside policy")}
 	payload,updater,manifest,sf,rsa:=false,false,false,false,false
 	for _,entry:=range zr.File{
-		name:=strings.ReplaceAll(entry.Name,"\","/");trimmed:=strings.TrimSuffix(name,"/");clean:=path.Clean(trimmed)
+		name:=strings.ReplaceAll(entry.Name,string(rune(92)),"/");trimmed:=strings.TrimSuffix(name,"/");clean:=path.Clean(trimmed)
 		if strings.HasPrefix(name,"/")||clean==".."||strings.HasPrefix(clean,"../")||strings.Contains(name,":")||clean!=trimmed||entry.Mode()&os.ModeSymlink!=0{return errors.New("OTA ZIP contains an unsafe entry")}
 		upper:=strings.ToUpper(name)
 		if name=="payload.bin"{payload=true};if name=="META-INF/com/google/android/update-binary"{updater=true}
