@@ -32,6 +32,7 @@ import (
 
 type LinuxConfig struct {
 	WorkerID string `json:"workerId"`
+	Scheduler *SchedulerConfig `json:"scheduler,omitempty"`
 	StateDir string `json:"stateDir"`
 	ChrootBase string `json:"chrootBase"`
 	CgroupParent string `json:"cgroupParent"`
