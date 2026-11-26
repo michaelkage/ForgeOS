@@ -163,7 +163,7 @@ func setupGuestProcessCgroup(limit int)(string,error){
 	}
 	worker:=filepath.Join(selfCgroup,"forgeos-worker")
 	if err:=os.MkdirAll(worker,0755);err!=nil{return "",err}
-	if err:=os.WriteFile(filepath.Join(worker,"pids.max"),[]byte(strconv.Itoa(limit)),0644);err!=nil{return "",errors.New("unable to enforce guest process limit")}
+	if err:=os.WriteFile(filepath.Join(worker,"pids.max"),[]byte(strconv.Itoa(limit)),0644);err!=nil{return "",errors.New("unable to enforce guest process limit")};actualLimit,err:=os.ReadFile(filepath.Join(worker,"pids.max"));if err!=nil||strings.TrimSpace(string(actualLimit))!=strconv.Itoa(limit){return "",errors.New("guest process limit could not be independently verified")}
 	procs,err:=os.ReadFile(filepath.Join(worker,"cgroup.procs"));if err!=nil{return "",err};if len(bytes.TrimSpace(procs))!=0{return "",errors.New("guest worker cgroup is not empty at job start")}
 	return worker,nil
 }
