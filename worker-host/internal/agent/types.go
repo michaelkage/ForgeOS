@@ -12,6 +12,7 @@ type Resources struct {
 
 type ProvisionRequest struct {
 	RequestID string `json:"requestId"`
+	WorkerID string `json:"workerId,omitempty"`
 	JobID string `json:"jobId"`
 	Attempt int `json:"attempt"`
 	Architecture string `json:"architecture"`
