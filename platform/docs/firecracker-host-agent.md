@@ -81,3 +81,16 @@ The guest init process receives one bounded envelope over the authenticated vsoc
 The credential table has no plaintext credential column. The issue endpoint remains unavailable unless build workers are explicitly enabled. This API does not provision a VM or enable Android builds.
 
 The host agent must issue only after obtaining a valid platform lease and deliver the credential exclusively over the authenticated vsock bootstrap envelope. The guest must verify the signed envelope before redemption and never write credentials to disk or logs. The missing scheduler still must own claim → issue → provision → bootstrap → monitor → terminate → signed stopped-state confirmation.
+
+
+## Linux host daemon and guest runtime
+
+The repository now contains a standalone Go host daemon and a guest init/runtime. The host daemon implements the provider protocol at HTTPS endpoints POST /v1/workers, GET /v1/workers/{id}, and POST /v1/workers/{id}/terminate. It only signs a provisioning response after host resource setup, Firecracker boot, delivery of the signed vsock envelope, guest signature verification, one-time platform credential redemption, and immutable snapshot digest verification have succeeded.
+
+The Linux runtime requires KVM, cgroup v2 CPU/memory/PID/I/O controllers, Firecracker and its matching jailer, LUKS2, ext4 tools, iproute2, nftables, and ACL utilities. It creates per-VM cgroups, encrypted fixed-size ephemeral storage, a private network namespace, TAP and veth devices, default-deny egress filters, and a bounded workspace disk. Teardown kills the VM cgroup before removing network rules/interfaces, unmounting storage, closing the LUKS mapping, and deleting the cgroup. If processes remain or encrypted storage cannot be unmounted, teardown fails and the signed state endpoint does not report stopped.
+
+The guest agent listens on AF_VSOCK, verifies the host Ed25519 envelope, redeems the one-use credential, verifies the immutable snapshot digest, mounts the encrypted workspace drive, renews the job lease, runs the immutable build-worker executable from the guest image, and uploads/completes the artifact through the platform's existing lease and artifact APIs. The build-worker executable itself must be baked into the approved immutable guest image; the host daemon does not accept a guest-supplied executable path.
+
+The host daemon must be deployed as a dedicated root service on a dedicated Linux host. Configure a delegated cgroup subtree with CPU, memory, PID, and I/O controllers; place the host-agent process outside the child cgroup subtree it manages. Configure a reserved UID/GID pool, root-owned kernel and worker image files, an Ed25519 host-attestation key, and the pinned matching Firecracker/jailer release. Use TLS 1.3 and a dedicated host-agent bearer token. Keep the host signing key distinct from all ROM release-signing keys.
+
+Build checks are automated with Go formatting, race-enabled tests, vet, and binary compilation. CI does not prove that KVM, cgroup, nftables, LUKS, jailer, vsock, or guest teardown work on the production kernel. A dedicated privileged-host integration run and independent security review remain mandatory before production enablement.
