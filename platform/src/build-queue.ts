@@ -231,7 +231,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         snapshot_sha256,snapshot->'configuration'->>'name' AS configuration_name,
         snapshot->'device'->>'codename' AS device_codename,
         snapshot->'configuration'->>'romBase' AS rom_base,
-        artifact_sha256,artifact_size_bytes,created_at,started_at,completed_at,updated_at
+        artifact_sha256,artifact_size_bytes,source_lockfile AS "sourceLockfile",source_lockfile_sha256 AS "sourceLockfileSha256",created_at,started_at,completed_at,updated_at
        FROM forgeos_build_jobs WHERE user_id=$1 ORDER BY created_at DESC LIMIT 100`,
       [request.user!.id]
     );
@@ -247,7 +247,7 @@ export async function registerBuildRoutes(app: FastifyInstance): Promise<void> {
         snapshot_sha256,snapshot->'configuration'->>'name' AS configuration_name,
         snapshot->'device'->>'codename' AS device_codename,
         snapshot->'configuration'->>'romBase' AS rom_base,
-        artifact_sha256,artifact_size_bytes,created_at,started_at,completed_at,updated_at
+        artifact_sha256,artifact_size_bytes,source_lockfile AS "sourceLockfile",source_lockfile_sha256 AS "sourceLockfileSha256",created_at,started_at,completed_at,updated_at
        FROM forgeos_build_jobs WHERE id=$1 AND user_id=$2`,
       [id.data, request.user!.id]
     );
