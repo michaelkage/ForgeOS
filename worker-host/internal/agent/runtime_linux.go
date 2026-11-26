@@ -270,7 +270,7 @@ func (r *LinuxRuntime) setupNetwork(m runtimeMeta,cidrs []string)error{
 	if err:=ns("addr","add",m.GatewayIP+"/30","dev",m.Tap);err!=nil{return err}
 	if err:=ns("link","set",m.Tap,"up");err!=nil{return err}
 	if err:=os.WriteFile("/proc/sys/net/ipv4/ip_forward",[]byte("1"),0644);err!=nil{return err}
-	allow:=make([]string,0,len(cidrs));for _,raw:=range cidrs{p,e:=netip.ParsePrefix(raw);if e!=nil||isForbiddenEgress(p){return errors.New("egress CIDR failed validation")};allow=append(allow,raw)}
+	allow:=make([]string,0,len(cidrs));for _,raw:=range cidrs{p,e:=netip.ParsePrefix(raw);if e:=validateEgressCIDR(raw);e!=nil{return e};allow=append(allow,raw)}
 	var host strings.Builder
 	host.WriteString("table inet "+m.PolicyTable+" { chain input { type filter hook input priority -300; policy accept; iifname \""+m.HostVeth+"\" drop; } chain forward { type filter hook forward priority -300; policy accept; iifname \""+m.HostVeth+"\" ct state established,related accept; ")
 	for _,cidr:=range allow{host.WriteString("iifname \""+m.HostVeth+"\" ip daddr "+cidr+" tcp dport 443 accept; ")}
@@ -294,7 +294,7 @@ func (r *LinuxRuntime) launchFirecracker(m runtimeMeta,req ProvisionRequest,kern
 	if err:=os.Chown(kernelTarget,m.UID,m.GID);err!=nil{return err}
 	if err:=run(context.Background(),"/usr/bin/setfacl","-m","u:"+strconv.Itoa(m.UID)+":rw","/dev/kvm");err!=nil{return err}
 	apiSocket:=filepath.Join(m.RootDir,"run/firecracker.socket")
-	args:=[]string{"--id",m.ID,"--exec-file",r.cfg.FirecrackerPath,"--uid",strconv.Itoa(m.UID),"--gid",strconv.Itoa(m.GID),"--chroot-base-dir",r.cfg.ChrootBase,"--cgroup-version","2","--parent-cgroup",filepath.Join(r.cfg.CgroupParent,m.ID),"--netns","/run/netns/"+m.NetNS,"--resource-limit","no-file=4096","--new-pid-ns","--seccomp-level","2","--","--api-sock","/run/firecracker.socket"}
+	args:=[]string{"--id",m.ID,"--exec-file",r.cfg.FirecrackerPath,"--uid",strconv.Itoa(m.UID),"--gid",strconv.Itoa(m.GID),"--chroot-base-dir",r.cfg.ChrootBase,"--cgroup-version","2","--parent-cgroup",filepath.Join(r.cfg.CgroupParent,m.ID),"--netns","/run/netns/"+m.NetNS,"--resource-limit","no-file=4096","--new-pid-ns","--","--api-sock","/run/firecracker.socket"}
 	cmd:=exec.Command(r.cfg.JailerPath,args...)
 	cmd.Env=[]string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin","LANG=C","LC_ALL=C"}
 	cmd.Stdout=io.Discard;cmd.Stderr=io.Discard
