@@ -146,11 +146,12 @@ export async function signUploadedArtifact(input: SignedArtifactRequest): Promis
       Readable.fromWeb(download.body as import("node:stream/web").ReadableStream<Uint8Array>),
       input, agent, signerUrl
     );
-    if (signed.statusCode !== 200) {
+    const signerStatus = signed.statusCode ?? 0;
+    if (signerStatus !== 200) {
       const detail = await readErrorResponse(signed);
-      const prefix = signed.statusCode === 422
+      const prefix = signerStatus === 422
         ? "artifact_signing_rejected: " : "signing_service_unavailable: ";
-      throw new Error(prefix + "signer returned HTTP " + signed.statusCode + (detail ? " (" + detail + ")" : ""));
+      throw new Error(prefix + "signer returned HTTP " + signerStatus + (detail ? " (" + detail + ")" : ""));
     }
     const sizeBytes = Number(signed.headers["content-length"]);
     const sha256 = signed.headers["x-forgeos-signed-sha256"];
