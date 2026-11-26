@@ -31,6 +31,7 @@ import (
 )
 
 type LinuxConfig struct {
+	WorkerID string `json:"workerId"`
 	StateDir string `json:"stateDir"`
 	ChrootBase string `json:"chrootBase"`
 	CgroupParent string `json:"cgroupParent"`
