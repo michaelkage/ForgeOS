@@ -96,7 +96,7 @@ func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
 	for digest,path:=range cfg.ImagePaths { if !digestPattern.MatchString(digest)||!filepath.IsAbs(path){return nil,errors.New("invalid image digest mapping")} }
 	for id,cidrs:=range cfg.EgressPolicies {
 		if !workerPattern.MatchString(id)||len(cidrs)==0 {return nil,errors.New("egress policies must have a stable ID and non-empty CIDR allowlist")}
-		for _,raw:=range cidrs { p,e:=netip.ParsePrefix(raw);if e!=nil||!p.Addr().Is4()||isForbiddenEgress(p){return nil,fmt.Errorf("egress policy %s contains an invalid, non-IPv4, or private destination",id)} }
+		for _,raw:=range cidrs { if e:=validateEgressCIDR(raw);e!=nil{return nil,fmt.Errorf("egress policy %s: %w",id,e)} }
 	}
 	for _,raw:=range cfg.DNSResolvers { a,e:=netip.ParseAddr(raw);if e!=nil||!a.Is4()||!a.IsGlobalUnicast()||a.IsPrivate()||a.IsLinkLocalUnicast()||isForbiddenEgress(netip.PrefixFrom(a,32)){return nil,errors.New("DNS resolver must be a public unicast IPv4 address")} }
 	if len(cfg.DNSResolvers)==0{return nil,errors.New("at least one explicitly allowlisted public DNS resolver is required")}
@@ -104,6 +104,8 @@ func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
 	for _,p:=range []string{cfg.StateDir,cfg.ChrootBase}{st,e:=os.Lstat(p);if e!=nil{return nil,e};sys,ok:=st.Sys().(*syscall.Stat_t);if !ok||sys.Uid!=0||st.Mode().Perm()&0022!=0{return nil,fmt.Errorf("runtime directory %s must be root-owned and not group/world writable",p)}}
 	return &LinuxRuntime{cfg:cfg,evidence:map[string]IsolationProfile{}},nil
 }
+
+func validateEgressCIDR(raw string)error{p,err:=netip.ParsePrefix(raw);if err!=nil||!p.Addr().Is4()||isForbiddenEgress(p){return errors.New("egress CIDR must be public IPv4 and must not include private, reserved, or metadata ranges")};return nil}
 
 func isForbiddenEgress(p netip.Prefix) bool {
 	blocked:=[]netip.Prefix{}
@@ -115,6 +117,7 @@ func isForbiddenEgress(p netip.Prefix) bool {
 func (r *LinuxRuntime) Provision(req ProvisionRequest,id string) error {
 	r.mu.Lock();defer r.mu.Unlock()
 	if !instancePattern.MatchString(id){return errors.New("invalid instance ID")}
+	if err:=validateRequest(req);err!=nil{return err}
 	if err:=r.preflight();err!=nil{return err}
 	if err:=regularRootOwned(r.cfg.JailerPath);err!=nil{return fmt.Errorf("jailer binary rejected: %w",err)}
 	if err:=regularRootOwned(r.cfg.FirecrackerPath);err!=nil{return fmt.Errorf("Firecracker binary rejected: %w",err)}
