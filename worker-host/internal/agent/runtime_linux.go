@@ -431,11 +431,30 @@ func (r *LinuxRuntime) verifyNetworkIsolation(m runtimeMeta)error{
 	host,err:=runOutput("/usr/sbin/nft","list","table","inet",m.PolicyTable);if err!=nil{return err}
 	inside,err:=runOutput("/usr/sbin/ip","netns","exec",m.NetNS,"nft","list","table","inet",m.PolicyTable);if err!=nil{return err}
 	nat,err:=runOutput("/usr/sbin/nft","list","table","ip",m.NATTable);if err!=nil{return err}
-	h:=string(host);n:=string(inside);z:=string(nat)
-	for _,rule:=range []string{fmt.Sprintf("iifname \"%s\" drop",m.HostVeth),fmt.Sprintf("oifname \"%s\" ct state established,related accept",m.HostVeth)}{if !strings.Contains(h,rule){return errors.New("host egress firewall is incomplete")}}
-	if !strings.Contains(n,"policy drop")||!strings.Contains(n,fmt.Sprintf("iifname \"%s\" drop",m.Tap))||!strings.Contains(n,fmt.Sprintf("oifname \"%s\" ct state established,related accept",m.Tap)){return errors.New("guest network namespace firewall is incomplete")}
-	for _,cidr:=range cidrs{if !strings.Contains(h,fmt.Sprintf("ip daddr %s tcp dport 443 accept",cidr))||!strings.Contains(n,fmt.Sprintf("ip daddr %s tcp dport 443 accept",cidr)){return fmt.Errorf("HTTPS egress rule for %s is missing",cidr)}}
-	for _,dns:=range r.cfg.DNSResolvers{for _,proto:=range []string{"udp","tcp"}{rule:=fmt.Sprintf("ip daddr %s %s dport 53 accept",dns,proto);if !strings.Contains(h,rule)||!strings.Contains(n,rule){return fmt.Errorf("DNS egress rule for %s is missing",dns)}}}
+	h,n,z:=string(host),string(inside),string(nat)
+	hostForwardStart:=strings.Index(h,"chain forward");insideForwardStart:=strings.Index(n,"chain forward")
+	if hostForwardStart<0||insideForwardStart<0{return errors.New("VM firewall forward chains are missing")}
+	hostInput,hostForward:=h[:hostForwardStart],h[hostForwardStart:]
+	insideInput,insideForward:=n[:insideForwardStart],n[insideForwardStart:]
+	if !strings.Contains(hostInput,fmt.Sprintf("iifname \"%s\" drop",m.HostVeth)){return errors.New("host input firewall does not isolate the VM interface")}
+	if !strings.Contains(insideInput,fmt.Sprintf("iifname \"%s\" drop",m.Tap)){return errors.New("guest namespace input firewall does not isolate the TAP interface")}
+	if !strings.Contains(insideForward,"policy drop"){return errors.New("guest namespace forwarding is not default-deny")}
+	hostDrop:=strings.Index(hostForward,fmt.Sprintf("iifname \"%s\" drop",m.HostVeth))
+	insideDrop:=strings.Index(insideForward,fmt.Sprintf("iifname \"%s\" drop",m.Tap))
+	if hostDrop<0||insideDrop<0{return errors.New("VM forwarding default-deny rules are missing")}
+	if !strings.Contains(hostForward,fmt.Sprintf("oifname \"%s\" ct state established,related accept",m.HostVeth))||!strings.Contains(insideForward,fmt.Sprintf("oifname \"%s\" ct state established,related accept",m.Tap)){return errors.New("VM established-flow return rules are missing")}
+	for _,cidr:=range cidrs{
+		hostRule:=fmt.Sprintf("iifname \"%s\" ip daddr %s tcp dport 443 accept",m.HostVeth,cidr)
+		insideRule:=fmt.Sprintf("iifname \"%s\" oifname \"%s\" ip daddr %s tcp dport 443 accept",m.Tap,m.GuestVeth,cidr)
+		hi,ii:=strings.Index(hostForward,hostRule),strings.Index(insideForward,insideRule)
+		if hi<0||hi>hostDrop||ii<0||ii>insideDrop{return fmt.Errorf("HTTPS egress rule for %s is missing or ordered after default deny",cidr)}
+	}
+	for _,dns:=range r.cfg.DNSResolvers{for _,proto:=range []string{"udp","tcp"}{
+		hostRule:=fmt.Sprintf("iifname \"%s\" ip daddr %s %s dport 53 accept",m.HostVeth,dns,proto)
+		insideRule:=fmt.Sprintf("iifname \"%s\" oifname \"%s\" ip daddr %s %s dport 53 accept",m.Tap,m.GuestVeth,dns,proto)
+		hi,ii:=strings.Index(hostForward,hostRule),strings.Index(insideForward,insideRule)
+		if hi<0||hi>hostDrop||ii<0||ii>insideDrop{return fmt.Errorf("DNS egress rule for %s is missing or ordered after default deny",dns)}
+	}}
 	if !strings.Contains(z,fmt.Sprintf("ip saddr %s masquerade",m.NetworkCIDR)){return errors.New("VM source NAT rule is missing")}
 	return nil
 }
