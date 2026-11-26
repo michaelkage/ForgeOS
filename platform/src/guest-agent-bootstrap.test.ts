@@ -29,6 +29,7 @@ function envelope(overrides: Record<string, unknown> = {}) {
     nonce: "123e4567-e89b-42d3-a456-426614174099",
     issuedAt: new Date(now).toISOString(),
     expiresAt: new Date(now + 120_000).toISOString(),
+    resources: { cpuCores: 4, memoryMiB: 8192, diskGiB: 200, processLimit: 2048, wallTimeSeconds: 3600 },
     ...overrides
   };
   return {
