@@ -50,6 +50,14 @@ func run()error{
 	listen:=os.Getenv("HOST_AGENT_LISTEN");if listen==""{listen=":9443"}
 	httpServer:=&http.Server{Addr:listen,Handler:server.Handler(),ReadHeaderTimeout:5*time.Second,ReadTimeout:15*time.Second,WriteTimeout:20*time.Second,IdleTimeout:30*time.Second,MaxHeaderBytes:16*1024,TLSConfig:&tls.Config{MinVersion:tls.VersionTLS13}}
 	ctx,stop:=signal.NotifyContext(context.Background(),syscall.SIGINT,syscall.SIGTERM);defer stop()
+	var schedulerDone chan struct{}
+	if os.Getenv("FORGEOS_SCHEDULER_ENABLED")=="true" {
+		if linuxConfig.Scheduler==nil{return errors.New("FORGEOS_SCHEDULER_ENABLED requires scheduler configuration")}
+		if linuxConfig.Scheduler.WorkerID!=linuxConfig.WorkerID{return errors.New("scheduler worker ID must match host runtime worker ID")}
+		scheduler,err:=agent.NewScheduler(server,*linuxConfig.Scheduler,os.Getenv("PLATFORM_WORKER_TOKEN"));if err!=nil{return err}
+		schedulerDone=make(chan struct{})
+		go func(){defer close(schedulerDone);if err:=scheduler.Run(ctx);err!=nil&&ctx.Err()==nil{log.Printf("ForgeOS scheduler stopped: %v",err)}}()
+	}
 	go func(){ticker:=time.NewTicker(time.Second);defer ticker.Stop();for{select{case<-ctx.Done():return;case<-ticker.C:if err:=runtime.SweepExpired();err!=nil{log.Printf("host-agent expiry reaper failed: %v",err)}}}}()
 	errCh:=make(chan error,1)
 	go func(){errCh<-httpServer.ListenAndServeTLS(cert,key)}()
@@ -57,6 +65,7 @@ func run()error{
 	case <-ctx.Done():
 		shutdownCtx,cancel:=context.WithTimeout(context.Background(),15*time.Second);defer cancel()
 		_ = httpServer.Shutdown(shutdownCtx)
+		if schedulerDone!=nil{<-schedulerDone}
 		if err:=runtime.Recover();err!=nil{return fmt.Errorf("VM teardown during shutdown failed: %w",err)}
 		return nil
 	case err:=<-errCh:
