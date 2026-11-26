@@ -83,6 +83,7 @@ type runtimeMeta struct {
 	Mounted bool `json:"mounted"`
 	Opened bool `json:"opened"`
 	FirecrackerPID int `json:"firecrackerPid"`
+	Phase string `json:"phase"`
 }
 
 func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
@@ -103,7 +104,7 @@ func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
 	if len(cfg.DNSResolvers)==0{return nil,errors.New("at least one explicitly allowlisted public DNS resolver is required")}
 	if err:=os.MkdirAll(cfg.StateDir,0700);err!=nil{return nil,err};if err:=os.MkdirAll(cfg.ChrootBase,0700);err!=nil{return nil,err}
 	for _,p:=range []string{cfg.StateDir,cfg.ChrootBase}{if e:=verifyRootPath(p);e!=nil{return nil,fmt.Errorf("unsafe runtime directory %s: %w",p,e)};st,e:=os.Lstat(p);if e!=nil{return nil,e};if st.Mode().Perm()&0077!=0{return nil,fmt.Errorf("runtime directory %s must be mode 0700",p)}}
-	return &LinuxRuntime{cfg:cfg,evidence:map[string]IsolationProfile{}},nil
+	return &LinuxRuntime{cfg:cfg,evidence:map[string]IsolationProfile{},terminating:map[string]bool{}},nil
 }
 
 func validateEgressCIDR(raw string)error{p,err:=netip.ParsePrefix(raw);if err!=nil||!p.Addr().Is4()||isForbiddenEgress(p){return errors.New("egress CIDR must be public IPv4 and must not include private, reserved, or metadata ranges")};return nil}
@@ -151,7 +152,7 @@ func (r *LinuxRuntime) Provision(req ProvisionRequest,id string) error {
 
 func (r *LinuxRuntime) Evidence(id string)(IsolationProfile,error){
 	r.mu.Lock();defer r.mu.Unlock()
-	m,err:=r.readMeta(id);if err!=nil{return IsolationProfile{},errors.New("isolation evidence is unavailable")};if err:=r.verifyFirecrackerInCgroup(m);err!=nil{return IsolationProfile{},err};if err:=r.moveKvmPitThreads();err!=nil{return IsolationProfile{},err};if p,ok:=r.evidence[id];ok{return p,nil};return IsolationProfile{FirecrackerMicroVM:true,DedicatedKernel:true,Jailer:true,NonRootVMM:true,NoHostMounts:true,NoContainerSocket:true,NoHostPIDNamespace:true,EncryptedEphemeralDisk:true,HardCPULimit:true,HardMemoryLimit:true,HardDiskLimit:true,HardProcessLimit:true,WallTimeLimit:true,EgressFiltering:true,MetadataBlocked:true,DestroyAfterJob:true,EgressPolicyID:m.EgressPolicyID,Resources:m.Resources},nil
+	m,err:=r.readMeta(id);if err!=nil||m.Phase!="running"{return IsolationProfile{},errors.New("isolation evidence is unavailable")};if err:=r.verifyFirecrackerInCgroup(m);err!=nil{return IsolationProfile{},err};if err:=r.moveKvmPitThreads();err!=nil{return IsolationProfile{},err};if p,ok:=r.evidence[id];ok{return p,nil};return IsolationProfile{FirecrackerMicroVM:true,DedicatedKernel:true,Jailer:true,NonRootVMM:true,NoHostMounts:true,NoContainerSocket:true,NoHostPIDNamespace:true,EncryptedEphemeralDisk:true,HardCPULimit:true,HardMemoryLimit:true,HardDiskLimit:true,HardProcessLimit:true,WallTimeLimit:true,EgressFiltering:true,MetadataBlocked:true,DestroyAfterJob:true,EgressPolicyID:m.EgressPolicyID,Resources:m.Resources},nil
 }
 
 func (r *LinuxRuntime) Inspect(id string)(string,error){
@@ -402,7 +403,7 @@ func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 	if mounted,e:=isMountPoint(m.JailDir);e!=nil{return e}else if mounted{return errors.New("encrypted VM storage remains mounted after teardown")}
 	if _,e:=os.Stat(m.JailDir);e==nil{if e=os.RemoveAll(m.JailDir);e!=nil{return e}}
 	statePath:=filepath.Join(r.cfg.StateDir,m.ID);if err:=os.RemoveAll(statePath);err!=nil{return err};if _,err:=os.Stat(statePath);!os.IsNotExist(err){return errors.New("ephemeral VM state remains after teardown")}
-	delete(r.evidence,m.ID)
+	delete(r.evidence,m.ID);delete(r.terminating,m.ID)
 	return nil
 }
 func verifyNetworkPools()error{
@@ -466,7 +467,7 @@ func (r *LinuxRuntime) SweepExpired()error{
 		return fmt.Errorf("KVM timer thread could not be bound to VM CPU cgroup; all active VMs were torn down: %w",err)
 	}
 	entries,e:=os.ReadDir(r.cfg.StateDir);if os.IsNotExist(e){return nil};if e!=nil{return e};var errs []error
-	for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if os.IsNotExist(e){_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,entry.Name()));continue};if e!=nil{errs=append(errs,e);continue};if time.Now().After(m.Deadline){if e=r.cleanup(m);e!=nil{errs=append(errs,e)}}}
+	for _,entry:=range entries{if !entry.IsDir()||!instancePattern.MatchString(entry.Name()){continue};m,e:=r.readMeta(entry.Name());if os.IsNotExist(e){_ = os.RemoveAll(filepath.Join(r.cfg.StateDir,entry.Name()));continue};if e!=nil{errs=append(errs,e);continue};if m.Phase!="running"||r.terminating[m.ID]||time.Now().After(m.Deadline){m.Phase="terminating";r.terminating[m.ID]=true;_ = r.writeMeta(m);if e=r.cleanup(m);e!=nil{errs=append(errs,e)}}}
 	if len(errs)>0{return errors.Join(errs...)};return nil
 }
 func verifyImageDigest(path,digest string)error{f,e:=os.Open(path);if e!=nil{return e};defer f.Close();h:=sha256.New();if _,e=io.Copy(h,f);e!=nil{return e};if "sha256:"+hex.EncodeToString(h.Sum(nil))!=digest{return errors.New("worker image bytes do not match the requested immutable SHA-256 digest")};return nil}
