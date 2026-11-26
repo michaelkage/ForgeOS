@@ -29,6 +29,7 @@ func listenVsock(port uint32)(net.Listener,error){
 func (l *vsockListener) Accept()(net.Conn,error){fd,_,err:=syscall.Accept(l.fd);if err!=nil{return nil,err};syscall.CloseOnExec(fd);return &vsockConn{fd:fd},nil}
 func (l *vsockListener) Close()error{return syscall.Close(l.fd)}
 func (l *vsockListener) Addr()net.Addr{return vsockAddr{cid:vmaddrCIDAny,port:l.port}}
+func (l *vsockListener) SetDeadline(time.Time)error{return nil}
 
 type vsockConn struct{fd int}
 func (c *vsockConn) Read(p []byte)(int,error){return syscall.Read(c.fd,p)}
