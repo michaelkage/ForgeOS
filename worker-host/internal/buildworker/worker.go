@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -30,14 +31,14 @@ func Run(ctx context.Context,cfg Config)error{
 	rel,err:=filepath.Rel(workspace,artifact);if err!=nil||rel==".."||strings.HasPrefix(rel,".."+string(os.PathSeparator)){return errors.New("artifact output must remain inside the encrypted job workspace")}
 	if err:=os.MkdirAll(filepath.Dir(artifact),0700);err!=nil{return err}
 	if _,err:=os.Stat(filepath.Join(workspace,"build","envsetup.sh"));err==nil{return errors.New("workspace already contains Android source; refusing to reuse non-empty source state")}
+	manifestURL:=lineageManifestURL;if s.Configuration.ROMBase=="crdroid"{manifestURL=crdroidManifestURL}
+	manifestArgs:=[]string{"init","-u",manifestURL,"-b",s.Configuration.ManifestRevision,"-m",s.Manifest.Path,"--depth=1","--no-clone-bundle"}
+	if err:=run(ctx,workspace,30*time.Minute,"/usr/local/bin/repo",manifestArgs...);err!=nil{return fmt.Errorf("repo init: %w",err)}
 	manifest,err:=pinManifest(s.Manifest.Content,s);if err!=nil{return err}
 	if err:=os.MkdirAll(filepath.Join(workspace,".repo","local_manifests"),0700);err!=nil{return err}
 	if err:=os.WriteFile(filepath.Join(workspace,".repo","local_manifests","forgeos-pinned.xml"),manifest,0600);err!=nil{return err}
-	manifestURL:=lineageManifestURL;if s.Configuration.ROMBase=="crdroid"{manifestURL=crdroidManifestURL}
-	manifestArgs:=[]string{"init","-u",manifestURL,"-b",s.Configuration.ManifestRevision,"-m",s.Manifest.Path,"--depth=1","--no-clone-bundle","--no-tags"}
-	if err:=run(ctx,workspace,30*time.Minute,"/usr/local/bin/repo",manifestArgs...);err!=nil{return fmt.Errorf("repo init: %w",err)}
-	jobs:=fmt.Sprintf("%d",max(2,min(16,4)))
-	if err:=run(ctx,workspace,ctxDeadlineBudget(ctx),"/usr/local/bin/repo","sync","-c","--fail-fast","--force-sync","--no-clone-bundle","-j",jobs);err!=nil{return fmt.Errorf("repo sync: %w",err)}
+	jobs:=fmt.Sprintf("%d",max(2,min(16,runtime.NumCPU())))
+	if err:=run(ctx,workspace,ctxDeadlineBudget(ctx),"/usr/local/bin/repo","sync","-c","--fail-fast","--force-sync","--no-clone-bundle","--no-tags","-j",jobs);err!=nil{return fmt.Errorf("repo sync: %w",err)}
 	target:="lineage_"+s.Device.Codename+"-userdebug"
 	script:="set -euo pipefail; source build/envsetup.sh; lunch \"$1\"; mka bacon"
 	if err:=run(ctx,workspace,ctxDeadlineBudget(ctx),"/bin/bash","-lc",script,"forgeos-build-worker",target);err!=nil{return fmt.Errorf("Android ROM build: %w",err)}
