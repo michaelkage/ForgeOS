@@ -20,7 +20,7 @@ func signedEnvelope(t *testing.T,private ed25519.PrivateKey,p BootstrapPayload)[
 }
 
 func validPayload(now time.Time)BootstrapPayload{
-	return BootstrapPayload{SchemaVersion:1,JobID:"123e4567-e89b-42d3-a456-426614174000",Attempt:2,Architecture:"x86_64",ImageDigest:"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",APIBaseURL:"https://forgeos.example",BootstrapCredential:"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",Nonce:"123e4567-e89b-42d3-a456-426614174001",IssuedAt:now.Add(-time.Second),ExpiresAt:now.Add(2*time.Minute)}
+	return BootstrapPayload{SchemaVersion:1,JobID:"123e4567-e89b-42d3-a456-426614174000",Attempt:2,Architecture:"x86_64",ImageDigest:"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",APIBaseURL:"https://forgeos.example",BootstrapCredential:"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",Nonce:"123e4567-e89b-42d3-a456-426614174001",IssuedAt:now.Add(-time.Second),ExpiresAt:now.Add(2*time.Minute),Resources:struct{CPUCores int `json:"cpuCores"`;MemoryMiB int `json:"memoryMiB"`;DiskGiB int `json:"diskGiB"`;ProcessLimit int `json:"processLimit"`;WallTimeSeconds int `json:"wallTimeSeconds"`}{CPUCores:4,MemoryMiB:8192,DiskGiB:200,ProcessLimit:2048,WallTimeSeconds:3600}}
 }
 
 func TestVerifyEnvelopeAcceptsValidSignedBootstrap(t *testing.T){
