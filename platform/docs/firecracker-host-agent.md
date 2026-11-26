@@ -74,7 +74,7 @@ The guest init process receives one bounded envelope over the authenticated vsoc
 
 ## One-time guest credential lifecycle
 
-`POST /api/internal/guest-bootstrap/issue` is authenticated with the platform worker service credential. Its strict body contains `jobId`, `workerId`, and the active `leaseToken`. The platform locks and verifies the unexpired lease, then returns a random 256-bit URL-safe credential with a 90-second expiry. Only its SHA-256 digest is persisted. Re-issuing for the same attempt replaces the previous digest.
+`POST /api/internal/guest-bootstrap/issue` is authenticated with the platform worker service credential. Its strict body contains `jobId`, `workerId`, and the active `leaseToken`. The platform locks and verifies the unexpired lease, then returns a random 256-bit URL-safe credential with a three-minute expiry. Only its SHA-256 digest is persisted. Re-issuing for the same attempt replaces the previous digest.
 
 `POST /api/internal/guest-bootstrap/redeem` accepts that credential as an HTTPS bearer token. Redemption atomically deletes the digest and returns the immutable job snapshot, snapshot digest, worker identity, attempt, and current lease token. A replay or concurrent second redemption fails. The lease must still be active and match the original worker and attempt.
 
