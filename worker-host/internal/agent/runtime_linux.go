@@ -184,8 +184,9 @@ func (r *LinuxRuntime) verifyResourceCapacity(res Resources)error{
 	if res.CPUCores>runtime.NumCPU(){return fmt.Errorf("requested %d vCPUs exceed the host's %d available CPUs",res.CPUCores,runtime.NumCPU())}
 	var info syscall.Sysinfo_t;if err:=syscall.Sysinfo(&info);err!=nil{return err}
 	total:=uint64(info.Totalram)*uint64(info.Unit);reserve:=total/10;if reserve<1024*1024*1024{reserve=1024*1024*1024}
+	available:=uint64(info.Freeram)*uint64(info.Unit);if meminfo,err:=os.ReadFile("/proc/meminfo");err==nil{for _,line:=range strings.Split(string(meminfo),"\n"){if strings.HasPrefix(line,"MemAvailable:"){fields:=strings.Fields(line);if len(fields)>=2{if kb,e:=strconv.ParseUint(fields[1],10,64);e==nil{available=kb*1024}};break}}}
 	required:=uint64(res.MemoryMiB+512)*1024*1024
-	if total<=reserve||required>total-reserve{return errors.New("host physical memory cannot safely satisfy the requested VM memory and host overhead reserve")}
+	if total<=reserve||available<required+reserve{return errors.New("currently available host memory cannot safely satisfy the VM memory limit and host reserve")}
 	var fs syscall.Statfs_t;if err:=syscall.Statfs(r.cfg.StateDir,&fs);err!=nil{return err}
 	available:=uint64(fs.Bavail)*uint64(fs.Bsize);disk:=uint64(res.DiskGiB)*1024*1024*1024
 	if available<disk{return errors.New("host filesystem does not have enough unallocated space for the fully reserved encrypted VM disk")}
