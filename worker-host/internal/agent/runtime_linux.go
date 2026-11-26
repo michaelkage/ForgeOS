@@ -170,7 +170,178 @@ type runtimeMeta struct {
 
 func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
 	if cfg.StateDir==""||cfg.ChrootBase==""||cfg.CgroupParent==""||cfg.JailerPath==""||cfg.FirecrackerPath=="" { return nil,errors.New("Linux runtime paths are required") }
-	).MatchString(cfg.CgroupParent)||strings.Contains(cfg.CgroupParent,".."){return nil,errors.New("cgroup parent must be a safe relative path")}
+	if !regexp.MustCompile(`^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*//go:build linux
+
+package agent
+
+import (
+	"bytes"
+	"bufio"
+	"crypto/rand"
+	"crypto/ed25519"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"net/netip"
+	"os/user"
+	"regexp"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+type LinuxConfig struct {
+	StateDir string `json:"stateDir"`
+	ChrootBase string `json:"chrootBase"`
+	CgroupParent string `json:"cgroupParent"`
+	JailerPath string `json:"jailerPath"`
+	FirecrackerPath string `json:"firecrackerPath"`
+	KernelPaths map[string]string `json:"kernelPaths"`
+	ImagePaths map[string]string `json:"imagePaths"`
+	EgressPolicies map[string][]string `json:"egressPolicies"`
+	DNSResolvers []string `json:"dnsResolvers"`
+	VMMUIDBase int `json:"vmmUidBase"`
+	VMMGIDBase int `json:"vmmGidBase"`
+	IOBytesPerSecond int64 `json:"ioBytesPerSecond"`
+	VsockPort uint32 `json:"vsockPort"`
+	BootstrapAPIBaseURL string `json:"bootstrapApiBaseUrl"`
+	SigningKey ed25519.PrivateKey `json:"-"`
+}
+
+type LinuxRuntime struct {
+	cfg LinuxConfig
+	mu sync.Mutex
+	evidence map[string]IsolationProfile
+}
+
+type runtimeMeta struct {
+	Resources Resources `json:"resources"`
+	EgressPolicyID string `json:"egressPolicyId"`
+	ID string `json:"id"`
+	CreatedAt time.Time `json:"createdAt"`
+	Deadline time.Time `json:"deadline"`
+	UID int `json:"uid"`
+	GID int `json:"gid"`
+	Tap string `json:"tap"`
+	GuestIP string `json:"guestIp"`
+	GatewayIP string `json:"gatewayIp"`
+	NetworkCIDR string `json:"networkCidr"`
+	NetNS string `json:"netns"`
+	HostVeth string `json:"hostVeth"`
+	GuestVeth string `json:"guestVeth"`
+	HostVethIP string `json:"hostVethIp"`
+	GuestVethIP string `json:"guestVethIp"`
+	Mapper string `json:"mapper"`
+	PolicyTable string `json:"policyTable"`
+	NATTable string `json:"natTable"`
+	CgroupPath string `json:"cgroupPath"`
+	JailDir string `json:"jailDir"`
+	RootDir string `json:"rootDir"`
+	DiskPath string `json:"diskPath"`
+	Mounted bool `json:"mounted"`
+	Opened bool `json:"opened"`
+}
+
+func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
+	if cfg.StateDir==""||cfg.ChrootBase==""||cfg.CgroupParent==""||cfg.JailerPath==""||cfg.FirecrackerPath=="" { return nil,errors.New("Linux runtime paths are required") }
+	if !filepath.IsAbs(cfg.StateDir)||!filepath.IsAbs(cfg.ChrootBase) { return nil,errors.New("runtime directories must be absolute") }
+	if !regexp.MustCompile(`^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*//go:build linux
+
+package agent
+
+import (
+	"bytes"
+	"crypto/rand"
+	"crypto/ed25519"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"net/netip"
+	"os/user"
+	"regexp"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+type LinuxConfig struct {
+	StateDir string `json:"stateDir"`
+	ChrootBase string `json:"chrootBase"`
+	CgroupParent string `json:"cgroupParent"`
+	JailerPath string `json:"jailerPath"`
+	FirecrackerPath string `json:"firecrackerPath"`
+	KernelPaths map[string]string `json:"kernelPaths"`
+	ImagePaths map[string]string `json:"imagePaths"`
+	EgressPolicies map[string][]string `json:"egressPolicies"`
+	DNSResolvers []string `json:"dnsResolvers"`
+	VMMUIDBase int `json:"vmmUidBase"`
+	VMMGIDBase int `json:"vmmGidBase"`
+	IOBytesPerSecond int64 `json:"ioBytesPerSecond"`
+	VsockPort uint32 `json:"vsockPort"`
+	BootstrapAPIBaseURL string `json:"bootstrapApiBaseUrl"`
+	SigningKey ed25519.PrivateKey `json:"-"`
+}
+
+type LinuxRuntime struct {
+	cfg LinuxConfig
+	mu sync.Mutex
+	evidence map[string]IsolationProfile
+}
+
+type runtimeMeta struct {
+	Resources Resources `json:"resources"`
+	EgressPolicyID string `json:"egressPolicyId"`
+	ID string `json:"id"`
+	CreatedAt time.Time `json:"createdAt"`
+	Deadline time.Time `json:"deadline"`
+	UID int `json:"uid"`
+	GID int `json:"gid"`
+	Tap string `json:"tap"`
+	GuestIP string `json:"guestIp"`
+	GatewayIP string `json:"gatewayIp"`
+	NetworkCIDR string `json:"networkCidr"`
+	NetNS string `json:"netns"`
+	HostVeth string `json:"hostVeth"`
+	GuestVeth string `json:"guestVeth"`
+	HostVethIP string `json:"hostVethIp"`
+	GuestVethIP string `json:"guestVethIp"`
+	Mapper string `json:"mapper"`
+	PolicyTable string `json:"policyTable"`
+	NATTable string `json:"natTable"`
+	CgroupPath string `json:"cgroupPath"`
+	JailDir string `json:"jailDir"`
+	RootDir string `json:"rootDir"`
+	DiskPath string `json:"diskPath"`
+	Mounted bool `json:"mounted"`
+	Opened bool `json:"opened"`
+}
+
+func NewLinuxRuntime(cfg LinuxConfig) (*LinuxRuntime,error) {
+	if cfg.StateDir==""||cfg.ChrootBase==""||cfg.CgroupParent==""||cfg.JailerPath==""||cfg.FirecrackerPath=="" { return nil,errors.New("Linux runtime paths are required") }).MatchString(cfg.CgroupParent)||strings.Contains(cfg.CgroupParent,".."){return nil,errors.New("cgroup parent must be a safe relative path")}
 	if cfg.VMMUIDBase+2000>60000||cfg.VMMGIDBase+2000>60000{return nil,errors.New("VMM identity pool exceeds the reserved system range")}
 	if cfg.VMMUIDBase<10000||cfg.VMMGIDBase<10000||cfg.IOBytesPerSecond<1_048_576 { return nil,errors.New("VMM identities and disk I/O limit are unsafe") }
 	if cfg.VsockPort==0 { cfg.VsockPort=4050 }
