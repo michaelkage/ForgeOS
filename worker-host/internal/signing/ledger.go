@@ -61,7 +61,8 @@ func(l *ledger)reserve(r ledgerRecord)error{
 }
 func(l *ledger)update(r ledgerRecord)error{
 	l.mu.Lock();defer l.mu.Unlock()
-	key:=ledgerKey(r.JobID,r.Attempt);if _,ok:=l.records[key];!ok{return errors.New("signing ledger reservation is missing")}
+	key:=ledgerKey(r.JobID,r.Attempt);current,ok:=l.records[key];if !ok{return errors.New("signing ledger reservation is missing")}
+	if current.Status!="signing"||(r.Status!="complete"&&r.Status!="failed")||current.SnapshotSHA256!=r.SnapshotSHA256||current.InputSHA256!=r.InputSHA256{return errors.New("invalid signing ledger state transition")}
 	r.UpdatedAt=time.Now().UTC()
 	if err:=l.appendLocked(r);err!=nil{return err};r.RecordSHA256=l.lastHash;l.records[key]=r;return nil
 }
