@@ -32,7 +32,7 @@ export const buildArtifactSchema = z.object({
 export const sourceLockfileSchema = z.object({
   schemaVersion: z.literal(1),
   projects: z.array(z.object({
-    path: z.string().min(1).max(512).refine(value => !value.startsWith("/") && !/[\\x00-\\x1f\\x7f\\\\]/.test(value) && value.split("/").every(part => part.length > 0 && part !== "." && part !== "..")),
+    path: z.string().min(1).max(512).refine(value => !value.startsWith("/") && !/[\x00-\x1f\x7f\\]/.test(value) && value.split("/").every(part => part.length > 0 && part !== "." && part !== "..")),
     name: z.string().min(1).max(512).refine(value => !/[\\x00-\\x1f\\x7f]/.test(value)),
     revision: z.string().regex(/^[a-f0-9]{40}$/)
   }).strict()).min(1).max(2000)
