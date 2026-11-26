@@ -135,6 +135,7 @@ func (s *Scheduler) monitorJob(ctx context.Context,job claimedJob,instance Insta
 	ticker:=time.NewTicker(5*time.Second);defer ticker.Stop()
 	for{
 		if ctx.Err()!=nil{s.terminateUntilStopped(instance.InstanceID);return}
+		if job.LeaseExpiresAt!=nil&&time.Now().After(*job.LeaseExpiresAt){s.terminateUntilStopped(instance.InstanceID);return}
 		status,err:=s.jobStatus(ctx,job.ID)
 		if err!=nil{log.Printf("ForgeOS scheduler status check failed for job %s: %v",job.ID,err)}else{
 			if status.Job.Status!="leased"||status.Job.WorkerID!=s.cfg.WorkerID||status.Job.Attempts!=job.Attempts{
@@ -143,6 +144,7 @@ func (s *Scheduler) monitorJob(ctx context.Context,job claimedJob,instance Insta
 			if status.Job.LeaseExpiresAt==nil||time.Now().After(*status.Job.LeaseExpiresAt){
 				s.terminateUntilStopped(instance.InstanceID);return
 			}
+			job.LeaseExpiresAt=status.Job.LeaseExpiresAt
 		}
 		state,stateErr:=s.server.cfg.Runtime.Inspect(instance.InstanceID)
 		if stateErr==nil&&state=="stopped"{
