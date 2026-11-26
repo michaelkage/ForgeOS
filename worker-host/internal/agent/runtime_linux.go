@@ -397,7 +397,7 @@ func (r *LinuxRuntime) cleanup(m runtimeMeta)error{
 func verifyNetworkPools()error{
 	out,err:=runOutput("/usr/sbin/ip","-4","route","show","table","all");if err!=nil{return fmt.Errorf("inspect host IPv4 routes: %w",err)}
 	pools:=[]netip.Prefix{netip.MustParsePrefix("10.252.0.0/16"),netip.MustParsePrefix("10.253.0.0/16")}
-	for _,line:=range strings.Split(string(out),"\n"){for _,token:=range strings.Fields(line){if p,e:=netip.ParsePrefix(token);e==nil{for _,pool:=range pools{if p.Contains(pool.Addr())||pool.Contains(p.Addr()){return fmt.Errorf("host route %s overlaps reserved Firecracker network pool %s",p,pool)}}};if a,e:=netip.ParseAddr(token);e==nil{for _,pool:=range pools{if pool.Contains(a){return fmt.Errorf("host address %s overlaps reserved Firecracker network pool %s",a,pool)}}}}}
+	for _,line:=range strings.Split(string(out),"\n"){fields:=strings.Fields(line);owned:=false;for i,token:=range fields{if token=="dev"&&i+1<len(fields)&&strings.HasPrefix(fields[i+1],"fv"){owned=true;break}};if owned{continue};for _,token:=range fields{if p,e:=netip.ParsePrefix(token);e==nil{for _,pool:=range pools{if p.Contains(pool.Addr())||pool.Contains(p.Addr()){return fmt.Errorf("host route %s overlaps reserved Firecracker network pool %s",p,pool)}}};if a,e:=netip.ParseAddr(token);e==nil{for _,pool:=range pools{if pool.Contains(a){return fmt.Errorf("host address %s overlaps reserved Firecracker network pool %s",a,pool)}}}}}
 	return nil
 }
 
