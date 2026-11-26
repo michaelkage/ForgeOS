@@ -104,11 +104,6 @@ export function verifyGuestBootstrap(
       expiresAt <= now || expiresAt > now + 5 * 60_000 || expiresAt <= issuedAt) {
     throw new Error("Guest bootstrap envelope is expired or outside its validity window");
   }
-  // Force an explicit fixed-length comparison for credential shape checks.
-  const credentialBytes = Buffer.from(payload.bootstrapCredential);
-  if (credentialBytes.length < 32 || credentialBytes.length > 4096) {
-    throw new TypeError("Guest bootstrap credential entropy envelope is invalid");
-  }
   return {
     jobId: payload.jobId,
     attempt: payload.attempt,
