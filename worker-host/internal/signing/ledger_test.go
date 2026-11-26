@@ -18,3 +18,14 @@ func TestLedgerReservesAttemptsOnceAndReloadsAppendOnlyRecords(t *testing.T){
 	got,ok:=reloaded.get(r.JobID,r.Attempt);if !ok||got.Status!="complete"||got.OutputSHA256!=r.OutputSHA256{t.Fatalf("unexpected reloaded ledger record: %#v",got)}
 	info,err:=os.Stat(path);if err!=nil{t.Fatal(err)};if info.Mode().Perm()&0077!=0{t.Fatalf("ledger permissions are too broad: %o",info.Mode().Perm())}
 }
+
+func TestLedgerRejectsModifiedAuditHistory(t *testing.T){
+	path:=filepath.Join(t.TempDir(),"audit","ledger.jsonl")
+	l,err:=openLedger(path);if err!=nil{t.Fatal(err)}
+	r:=ledgerRecord{JobID:"123e4567-e89b-42d3-a456-426614174000",Attempt:1,SnapshotSHA256:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",InputSHA256:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+	if err:=l.reserve(r);err!=nil{t.Fatal(err)}
+	data,err:=os.ReadFile(path);if err!=nil{t.Fatal(err)}
+	for i:=range data{if data[i]=='s'{data[i]='x';break}}
+	if err:=os.WriteFile(path,data,0600);err!=nil{t.Fatal(err)}
+	if _,err:=openLedger(path);err==nil{t.Fatal("expected tampered audit history rejection")}
+}
